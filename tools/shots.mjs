@@ -2,9 +2,10 @@
 //
 //   node tools/shots.mjs        # writes .playtest/*.png
 //
-// Drives the game through window.__GAME__ and flies it with a simple
-// hook-swing-release autopilot, so the mid-dive shots show a real rope under
-// real tension rather than a diver in freefall.
+// Drives the game through window.__GAME__, flies it to depth with a gap-
+// threading autopilot, then freezes the simulation and photographs the SAME
+// piece of tube at four speeds — so the only variable between those frames is
+// velocity, and every difference is the distortion doing its job.
 
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -50,38 +51,56 @@ function serve(root) {
   return new Promise((ok) => server.listen(0, '127.0.0.1', () => ok({ server, port: server.address().port })));
 }
 
-// Flies the dive forward for `seconds`, hooking and releasing on a rhythm.
-// Runs inside the page so it drives the real simulation.
-const AUTOPILOT = (seconds, invincible) => {
+// Flies the run to a given depth inside the page, threading the widest gap of
+// each plane so the ship is genuinely mid-tube when the shutter opens.
+const FLY_TO = (targetDist) => {
   const g = window.__GAME__.game;
   const run = g.run;
   const STEP = 1 / 120;
-  let hookT = 0;
-  for (let i = 0; i < 120 * seconds; i++) {
-    if (invincible) {
-      // Survive for the photo without deleting the hazards — they are most of
-      // what the screenshot is meant to show.
-      run.god = true;
-      run.collapseY = Math.min(run.collapseY, run.y - 1500);
+  run.god = true; // tools only: survive the trip to the interesting depth
+  for (let i = 0; i < 120 * 600 && run.dist < targetDist; i++) {
+    // Hold the nearest plane ahead until it is actually crossed; releasing it
+    // early drifts the ship off the gap it is still inside.
+    let best = null;
+    let bestDz = 1e9;
+    for (const p of run.track.planes()) {
+      const dz = p.z - run.z;
+      if (dz > 0 && dz < bestDz) { bestDz = dz; best = p; }
     }
-    hookT += STEP;
-    if (run.hook === 0 && hookT > 0.55) {
-      run.selectTarget(run.x);
-      if (run.target) {
-        run.fire(run.x);
-        hookT = 0;
+    if (best) {
+      const arcs = [];
+      const t = run.z / 1000;
+      const rot = best.spin * t + best.phase;
+      for (const a of best.arcs) arcs.push(a[0] + rot, a[1] + (best.iris || 0));
+      let want = run.angle;
+      let bestGap = -1;
+      for (let k = 0; k < 64; k++) {
+        const cand = (k / 64) * Math.PI * 2;
+        let gap = Infinity;
+        for (let j = 0; j < arcs.length; j += 2) {
+          const d = Math.abs(Math.atan2(Math.sin(cand - arcs[j]), Math.cos(cand - arcs[j]))) - arcs[j + 1];
+          if (d < gap) gap = d;
+        }
+        if (gap > bestGap) { bestGap = gap; want = cand; }
       }
-    } else if (run.hook === 2 && hookT > 0.42) {
-      run.release();
-      hookT = 0;
+      const diff = Math.atan2(Math.sin(want - run.angle), Math.cos(want - run.angle));
+      run.angle += Math.max(-0.045, Math.min(0.045, diff));
     }
     run.update(STEP, null);
-    run.updateTrail(STEP);
     run.events.length = 0;
-    if (run.dead) break;
   }
-  run.selectTarget(run.x);
-  run.predictArc();
+};
+
+// Pins the run at one speed and FREEZES the simulation, so the frame captured
+// is exactly the frame set up here. Without the freeze the ship keeps flying
+// unattended during the settle before the shutter, clips a plane or two, and
+// the "full warp" shot ends up showing the wreck instead.
+const POSE = (speed, combo) => {
+  const g = window.__GAME__.game;
+  g.run.speed = speed;
+  g.run.combo = combo;
+  g.run.comboT = 2;
+  g.loop.freeze(30);
 };
 
 const { chromium } = loadPlaywright();
@@ -103,12 +122,12 @@ page.on('console', (m) => m.type() === 'error' && console.error('CONSOLE:', m.te
 // Seeded before any page script runs — the game persists on pagehide, so
 // setting it after load and reloading would be overwritten on the way out.
 await ctx.addInitScript(() => {
-  localStorage.setItem('hookfall.v1', JSON.stringify({
-    v: 1, best: 6420, bestScore: 184000, bestCombo: 27, runs: 48,
-    totalDepth: 96000, gems: 210, shards: 2400,
-    upgrades: { reach: 2, snap: 1, winch: 3, wax: 1 },
-    depths20: [220, 480, 610, 900, 1250, 1180, 1700, 2100, 1950, 2600,
-      3100, 2900, 3600, 4200, 3900, 4800, 5200, 5000, 5900, 6420],
+  localStorage.setItem('redshift.v1', JSON.stringify({
+    v: 1, best: 6180, bestScore: 210000, bestCombo: 26, bestSpeed: 4820, runs: 52,
+    totalDist: 190000, shards: 2100,
+    upgrades: { grip: 2, lens: 0, intake: 3, hull: 1 },
+    dists20: [420, 700, 900, 1400, 1200, 1900, 2400, 2100, 2900, 3300,
+      3100, 3800, 4200, 4000, 4600, 5100, 4900, 5500, 5800, 6180],
   }));
 });
 
@@ -116,49 +135,49 @@ await page.goto(base, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1000);
 await page.screenshot({ path: join(OUT, '01-title.png') });
 
-await page.evaluate(() => { window.__GAME__.game.screen = 'hook'; });
+await page.evaluate(() => { window.__GAME__.game.screen = 'ship'; });
 await page.waitForTimeout(400);
-await page.screenshot({ path: join(OUT, '02-hook.png') });
+await page.screenshot({ path: join(OUT, '02-ship.png') });
 
-await page.evaluate(() => { window.__GAME__.game.screen = 'settings'; });
-await page.waitForTimeout(400);
-await page.screenshot({ path: join(OUT, '03-settings.png') });
+// The whole pitch of the game: ONE piece of tube, at four speeds. The run is
+// flown to depth once and then frozen, so between these four frames nothing
+// changes except velocity — every difference you can see is the distortion.
+await page.evaluate(
+  ({ src, dist }) => {
+    const g = window.__GAME__.game;
+    g.screen = 'title';
+    g.beginRun({ daily: false });
+    new Function('targetDist', `return (${src})(targetDist)`)(dist);
+  },
+  { src: FLY_TO.toString(), dist: 30000 }
+);
 
-// Runs a fresh dive forward with the autopilot, then screenshots it.
-async function shotDive(name, seconds, tweak = null) {
+const POSES = [
+  ['03-warp-000.png', 900, 0],
+  ['04-warp-040.png', 2620, 8],
+  ['05-warp-075.png', 4125, 16],
+  ['06-warp-100.png', 5200, 24],
+];
+for (const [name, speed, combo] of POSES) {
   await page.evaluate(
-    ({ secs, src, tw }) => {
-      const g = window.__GAME__.game;
-      g.screen = 'title';
-      g.beginRun({ daily: false });
-      if (tw) new Function('run', tw)(g.run);
-      new Function('seconds', 'invincible', `return (${src})(seconds, invincible)`)(secs, true);
-    },
-    { secs: seconds, src: AUTOPILOT.toString(), tw: tweak }
+    ({ src, sp, cb }) => new Function('speed', 'combo', `return (${src})(speed, combo)`)(sp, cb),
+    { src: POSE.toString(), sp: speed, cb: combo }
   );
-  await page.waitForTimeout(420);
+  await page.waitForTimeout(260);
   await page.screenshot({ path: join(OUT, name) });
 }
 
-// Early dive: THE MOUTH, rope under tension.
-await shotDive('04-dive-mouth.png', 9);
-
-// Deep dive: start the diver already inside a later biome so the palette,
-// hazards and speed all reflect a real run rather than the first nine seconds.
-await shotDive('05-dive-vein.png', 7, 'run.y = 2900 * 20; run.vy = 1900; run.collapseY = run.y - 1500; run.world.ensure(run.y - 1600, run.y + 3600);');
-await shotDive('06-dive-hum.png', 7, 'run.y = 8200 * 20; run.vy = 2300; run.collapseY = run.y - 1200; run.world.ensure(run.y - 1600, run.y + 3600);');
-
-// A chain running, for the HUD.
-await shotDive('07-chain.png', 6, 'run.y = 5200 * 20; run.vy = 2100; run.combo = 18; run.comboT = 2.4; run.collapseY = run.y - 900; run.world.ensure(run.y - 1600, run.y + 3600);');
-
-// Results.
 await page.evaluate(() => {
   const g = window.__GAME__.game;
+  // Release the pose freeze first — with the simulation still held, the death
+  // sequence never advances and this shot is just a copy of the last one.
+  g.loop.hitstop = 0;
   g.screen = 'play';
+  g.run.god = false;
   g.run.killNow();
 });
-await page.waitForTimeout(2200);
-await page.screenshot({ path: join(OUT, '08-results.png') });
+await page.waitForTimeout(3400); // let the count-up finish before the shutter
+await page.screenshot({ path: join(OUT, '07-results.png') });
 
 console.log(`wrote screenshots to ${OUT}`);
 await browser.close();

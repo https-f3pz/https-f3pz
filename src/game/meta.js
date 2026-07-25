@@ -1,5 +1,5 @@
-// Everything that outlives a dive: records, shards, hook upgrades, rotating
-// missions, the daily seed, and the one sentence that makes you dive again.
+// Everything that outlives a run: records, shards, upgrades, missions, the
+// daily seed, and the one sentence that makes you press GO again.
 
 import { UPGRADES, MISSION_POOL, RANKS, rankFor } from './config.js';
 import { save as writeSave, flushNow } from '../core/storage.js';
@@ -12,10 +12,9 @@ export function todayKey(d = new Date()) {
   return `${y}${m}${day}`;
 }
 
-// The offline substitute for a leaderboard: everyone diving on the same date
-// gets the same shaft, verifiably, with no network involved.
+// Everyone diving on the same date gets the same tube, with no network.
 export function dailySeed(key = todayKey()) {
-  return hashSeed(`HOOKFALL${key}`);
+  return hashSeed(`REDSHIFT${key}`);
 }
 
 export function rollMissions(save) {
@@ -39,8 +38,8 @@ export function upgradeTier(save, id) {
 
 export function upgradeCost(save, id) {
   const u = UPGRADES.find((x) => x.id === id);
-  const tier = upgradeTier(save, id);
-  return tier >= u.costs.length ? null : u.costs[tier];
+  const t = upgradeTier(save, id);
+  return t >= u.costs.length ? null : u.costs[t];
 }
 
 export function buyUpgrade(save, id) {
@@ -54,29 +53,26 @@ export function buyUpgrade(save, id) {
 }
 
 function progressMissions(save, run, out) {
-  const missions = ensureMissions(save);
-  for (const m of missions) {
+  for (const m of ensureMissions(save)) {
     if (m.done) continue;
     let v = 0;
     switch (m.id) {
-      case 'graze40': v = run.grazeCount; break;
-      case 'depth6k': v = run.depth; break;
-      case 'gems12': v = run.gems; break;
+      case 'dist5k': v = run.dist; break;
       case 'chain20': v = run.bestCombo; break;
-      case 'whip15': v = run.whipcracks; break;
-      case 'speed4k': v = run.topSpeed; break;
-      case 'noreel': v = run.reeled ? 0 : run.depth; break;
-      case 'gate3': v = run.depth; break;
+      case 'top4k': v = run.topSpeed; break;
+      case 'clean40': v = run.bestCleanGates; break;
+      case 'zone3': v = run.dist; break;
+      case 'graze60': v = run.grazes; break;
       default: v = 0;
     }
     m.prog = Math.max(m.prog, v);
     if (m.prog >= m.goal) {
       m.done = true;
-      save.shards = (save.shards ?? 0) + 300;
+      save.shards = (save.shards ?? 0) + 250;
       out.missionsDone.push(m);
     }
   }
-  if (missions.every((m) => m.done)) {
+  if (save.missions.every((m) => m.done)) {
     save.missionSets = (save.missionSets ?? 0) + 1;
     save.missions = rollMissions(save);
     out.missionSetCleared = true;
@@ -87,70 +83,54 @@ function updateDaily(save, run, isDaily) {
   if (!isDaily) return;
   const key = todayKey();
   const d = save.daily;
-  // One seed, one shot. Without this the daily is unlimited retries and the
-  // streak it feeds means nothing as a comparison.
+  // One seed, one shot: otherwise the streak it feeds means nothing.
   if (d.date === key && d.locked) return;
   if (d.date !== key) {
     const yesterday = todayKey(new Date(Date.now() - 86400000));
     d.streak = d.date === yesterday ? (d.streak || 0) + 1 : 1;
     d.date = key;
   }
-  d.depth = run.depth;
+  d.dist = run.dist;
   d.score = run.score;
   d.locked = true;
-  d.history = [...(d.history || []).filter((h) => h.date !== key), { date: key, depth: d.depth }].slice(-30);
+  d.history = [...(d.history || []).filter((h) => h.date !== key), { date: key, dist: d.dist }].slice(-30);
 }
 
-/** Folds a finished dive into the save and returns what to celebrate. */
 export function recordRun(save, run, ctx = {}) {
   const out = { newBest: false, missionsDone: [], missionSetCleared: false, shardsEarned: 0 };
-
-  out.newBest = run.depth > (save.best || 0);
+  out.newBest = run.dist > (save.best || 0);
   const earned = Math.floor(run.shards);
   out.shardsEarned = earned;
 
   save.runs = (save.runs || 0) + 1;
-  save.best = Math.max(save.best || 0, run.depth);
+  save.best = Math.max(save.best || 0, run.dist);
   save.bestScore = Math.max(save.bestScore || 0, run.score);
   save.bestCombo = Math.max(save.bestCombo || 0, run.bestCombo);
-  save.totalDepth = (save.totalDepth || 0) + run.depth;
-  save.gems = (save.gems || 0) + run.gems;
+  save.bestSpeed = Math.max(save.bestSpeed || 0, run.topSpeed);
+  save.totalDist = (save.totalDist || 0) + run.dist;
   save.shards = (save.shards || 0) + earned;
-  save.depths20 = [...(save.depths20 || []), Math.round(run.depth)].slice(-20);
+  save.dists20 = [...(save.dists20 || []), Math.round(run.dist)].slice(-20);
 
   progressMissions(save, run, out);
   updateDaily(save, run, ctx.isDaily);
 
   writeSave(save);
-  flushNow(); // exactly one synchronous write per dive
+  flushNow(); // exactly one synchronous write per run
   return out;
 }
 
-/**
- * One sentence about the dive you just had. Legible failure is worth more
- * than any unlock, and in a physics game the useful note is almost always
- * about *when you let go*.
- */
+/** One sentence about the run. In this game it is almost always about speed. */
 export function coachingLine(run) {
-  if (run.deathCause === 'collapse') {
-    return run.hookTime > run.time * 0.55
-      ? 'THE COLLAPSE TOOK YOU — YOU HUNG ON TOO LONG.'
-      : 'THE COLLAPSE TOOK YOU. SWING SHORTER, RELEASE EARLIER.';
-  }
-  if (run.deathCause === 'hazard' && run.topSpeed > 3200) {
-    return `${Math.round(run.topSpeed)} px/s INTO A HAZARD. FAST IS ONLY FREE IF YOU CAN STEER.`;
-  }
-  if (run.hooks === 0) return 'YOU NEVER FIRED THE HOOK. PRESS ANYWHERE — IT AIMS FOR YOU.';
-  if (run.whipcracks === 0 && run.hooks >= 4) return 'NO WHIPCRACKS. RELEASE AT THE BOTTOM OF THE SWING.';
-  if (run.bestCombo >= 20) return `${run.bestCombo} CHAIN. THAT IS THE GAME.`;
-  if (run.bestCombo <= 3 && run.depth > 800) return 'ALMOST NO GRAZES. FLY CLOSER — NEAR MISSES ARE THE SCORE.';
-  if (!run.reeled && run.depth > 1500) return 'YOU NEVER REELED. SLIDE YOUR THUMB UP MID-SWING TO PUMP SPEED.';
-  if (run.whipcracks >= 6) return `${run.whipcracks} WHIPCRACKS. NOW GO DEEPER.`;
-  return `${Math.round(run.depth)} m. THE SHAFT GOES A LOT FURTHER.`;
+  if (run.grazes === 0 && run.gates > 6) return 'YOU PLAYED IT SAFE. THE HULL TIRES ANYWAY.';
+  if (run.clips >= 6) return `${run.clips} CLIPS. EACH ONE CRACKED THE HULL A LITTLE FURTHER.`;
+  if (run.topSpeed < 1600) return 'YOU NEVER GOT FAST ENOUGH TO SEE THE WARP. GRAZE MORE.';
+  if (run.bestCombo >= 20) return `${run.bestCombo} CHAIN. THAT IS WHERE THE VIEW STARTS LYING.`;
+  if (run.bestCombo <= 3) return 'CHAIN YOUR GRAZES — CONSECUTIVE ONES ARE WORTH FAR MORE.';
+  if (run.topSpeed > 4200) return `${Math.round(run.topSpeed)} SPEED. NOW HOLD IT LONGER.`;
+  return `${Math.round(run.dist).toLocaleString()} UNITS. THE TUBE DOES NOT END.`;
 }
 
-export function rank(m) {
-  return rankFor(m);
+export function rank(d) {
+  return rankFor(d);
 }
-
 export { RANKS };

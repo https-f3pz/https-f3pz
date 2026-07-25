@@ -1,525 +1,341 @@
 // Rendering.
 //
-// The look is flat neon-noir silhouette: near-black solids, one accent colour,
-// one hazard colour, nothing else — so that at 4200 px/s on a five-inch screen
-// the shape language reads instantly.
+// A real perspective projection down a tube, deliberately corrupted by speed.
+// Four distortions, all driven by one 0..1 `warp` value that IS the player's
+// velocity:
 //
-//   CYAN RING = anchor · RED JAGGED = kills you · GOLD DIAMOND = gem
-//   BLACK = wall · WHITE = you
+//   FIELD OF VIEW  widens, so the walls rush past instead of drifting
+//   BARREL         bows the bore outward, hardest at the screen edges
+//   SMEAR          streaks every edge along its own screen-space motion
+//   DOPPLER        shifts the far end blue and the near end red
 //
-// shadowBlur is never used; every emissive shape is drawn twice instead (once
-// wide and translucent, once solid), which costs two fills and keeps 60fps.
+// The consequence is the design: the better you play, the faster you go, and
+// the less the picture can be trusted. The simulation is unaffected — all
+// collision is angular — so the view lies to the player and never to the game.
 
-import { VW, PX_PER_M, HAZ, COLLAPSE, halfGap, centreX, biomeBlend } from './config.js';
-import { mixHex, withAlpha, clamp, lerp, cachedLinearGradient, cachedRadialGradient } from '../core/draw.js';
-import { makeRng } from '../core/rng.js';
+import { VW, TUBE, WARP, SPEED, zoneBlend, speedFloor } from './config.js';
+import { arcsAt } from './track.js';
+import { mixHex, withAlpha, clamp, lerp } from '../core/draw.js';
 
 const TAU = Math.PI * 2;
-
-// Parallax silhouettes are baked once per 900px segment per layer.
-const rockCache = new Map();
-
-function rockPath(layer, seg, amp, step) {
-  const key = `${layer}:${seg}`;
-  let p = rockCache.get(key);
-  if (p) return p;
-  const rng = makeRng((seg * 2654435761 + layer * 40503) >>> 0);
-  p = new Path2D();
-  // Left silhouette.
-  p.moveTo(0, 0);
-  for (let y = 0; y <= 900; y += step) {
-    p.lineTo(amp * rng.range(0.25, 1.0), y);
-  }
-  p.lineTo(0, 900);
-  p.closePath();
-  // Right silhouette.
-  p.moveTo(VW, 0);
-  for (let y = 0; y <= 900; y += step) {
-    p.lineTo(VW - amp * rng.range(0.25, 1.0), y);
-  }
-  p.lineTo(VW, 900);
-  p.closePath();
-  if (rockCache.size > 220) rockCache.clear();
-  rockCache.set(key, p);
-  return p;
-}
-
-export function clearRockCache() {
-  rockCache.clear();
-}
 
 export class Renderer {
   constructor() {
     this.t = 0;
-    this.chroma = 0;
+    this.cx = VW / 2;
+    this.cy = 600;
+    this.R = 800;
+    this.roll = 0;
+    // Scratch buffers: the projection runs thousands of times a frame and must
+    // not allocate.
+    this._arcs = [];
+    this._pt = { x: 0, y: 0, s: 0 };
   }
 
-  palette(metres) {
-    const b = biomeBlend(metres);
-    const from = b.from;
-    const to = b.to;
-    const k = Math.round(b.k * 16) / 16;
+  palette(dist) {
+    const b = zoneBlend(dist);
+    const k = Math.round(b.k * 12) / 12;
     return {
-      bgTop: mixHex(from.bgTop, to.bgTop, k),
-      bgBottom: mixHex(from.bgBottom, to.bgBottom, k),
-      accent: mixHex(from.accent, to.accent, k),
-      hazard: mixHex(from.hazard, to.hazard, k),
-      rock: mixHex(from.rock, to.rock, k),
+      wall: mixHex(b.from.wall, b.to.wall, k),
+      edge: mixHex(b.from.edge, b.to.edge, k),
+      hazard: mixHex(b.from.hazard, b.to.hazard, k),
+      fog: mixHex(b.from.fog, b.to.fog, k),
     };
   }
 
-  // ---------------------------------------------------------------- camera
+  setup(run, view) {
+    this.cx = VW / 2;
+    this.cy = view.vh * 0.44;
+    this.R = Math.hypot(VW, view.vh) * 0.5;
+    const w = run.warp;
+    this.w = w;
+    this.fov = lerp(WARP.fovMin, WARP.fovMax, w);
+    // Turning rolls the camera slightly — it reads as banking and it is the
+    // only cue that the tube is rotating around you rather than you around it.
+    this.roll = lerp(this.roll, clamp(-run.angVel * WARP.roll, -0.5, 0.5), 0.15);
+    this.camZ = run.z - TUBE.near;
+  }
 
-  camera(run, view) {
-    const vh = view.vh;
-    // The diver sits high on the screen so most of the viewport is the ground
-    // you are about to cover, and lookahead opens it further as you speed up.
-    const look = clamp(run.vy * 0.20, -60, 420);
-    const y = run.y - vh * 0.30 + look;
-    const speedK = clamp((Math.hypot(run.vx, run.vy) - 1000) / 2000, 0, 1);
-    return { y, zoom: 1 / (1 + 0.07 * speedK), speedK };
+  /**
+   * World (angle around bore, radius, z) -> screen, with the velocity
+   * distortion applied. Writes into a scratch point to stay allocation-free.
+   */
+  project(worldAngle, r, z, shipAngle) {
+    const p = this._pt;
+    const dz = z - this.camZ;
+    if (dz <= 12) {
+      p.s = -1;
+      return p;
+    }
+    // Rotate the bore so the ship sits at the bottom of the screen.
+    const a = worldAngle - shipAngle + Math.PI / 2 + this.roll;
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r;
+    const s = this.fov / dz;
+    let px = x * s;
+    let py = y * s;
+
+    // Barrel: push everything outward in proportion to how far out it already
+    // is. At rest this is identity; at full speed the bore visibly bulges.
+    if (this.w > 0.001) {
+      const rr = Math.hypot(px, py) / this.R;
+      const k = 1 + WARP.barrel * this.w * rr * rr;
+      px *= k;
+      py *= k;
+    }
+    p.x = this.cx + px;
+    p.y = this.cy + py;
+    p.s = s;
+    return p;
+  }
+
+  /** Depth fade toward the zone's fog colour, plus the Doppler shift. */
+  depthColour(base, dz, pal) {
+    const far = clamp(dz / TUBE.far, 0, 1);
+    let c = mixHex(base, pal.fog, far * 0.82);
+    if (this.w > 0.02) {
+      // Far end toward blue, near end toward red — an aberration cue that
+      // makes speed legible even in a still frame.
+      const shift = (0.5 - far) * 2; // +1 near, -1 far
+      const target = shift > 0 ? '#ff2a1e' : '#4aa8ff';
+      c = mixHex(c, target, Math.abs(shift) * this.w * WARP.doppler * 0.72);
+    }
+    return c;
   }
 
   // ------------------------------------------------------------ background
 
-  background(ctx, run, view, cam, pal, opt) {
-    const vh = view.vh;
-    ctx.fillStyle = cachedLinearGradient(
-      ctx, `bg:${pal.bgTop}${pal.bgBottom}${Math.round(vh)}`,
-      0, 0, 0, vh, [[0, pal.bgTop], [1, pal.bgBottom]]
-    );
-    ctx.fillRect(0, 0, VW, vh);
+  background(ctx, run, view, pal) {
+    const g = ctx.createLinearGradient(0, 0, 0, view.vh);
+    g.addColorStop(0, pal.fog);
+    g.addColorStop(0.45, mixHex(pal.fog, pal.wall, 0.35));
+    g.addColorStop(1, pal.fog);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, VW, view.vh);
+
+    // The vanishing point glows — it is where everything is coming from.
+    const gr = ctx.createRadialGradient(this.cx, this.cy, 0, this.cx, this.cy, 260 + this.w * 240);
+    gr.addColorStop(0, withAlpha(pal.edge, 0.30 + this.w * 0.35));
+    gr.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gr;
+    ctx.fillRect(0, 0, VW, view.vh);
   }
 
-  // Three parallax layers of jagged rock, each scrolling at its own rate.
-  // Drawn into whatever region the caller has clipped to — which is the wall
-  // mass, so the walls have visible strata instead of being flat black.
-  parallax(ctx, view, cam, pal, opt) {
-    if (opt.reduceGlow) return;
-    const vh = view.vh;
-    // Two layers, not three: clipping each one to the wall silhouette is the
-    // single most expensive thing in the frame, and the third layer was worth
-    // far less than the ~6ms it cost.
-    const layers = opt.quality < 1
-      ? [{ f: 0.35, amp: 260, step: 150, alpha: 0.5, tint: 0.2 }]
-      : [
-        { f: 0.28, amp: 300, step: 150, alpha: 0.55, tint: 0.0 },
-        { f: 0.58, amp: 200, step: 100, alpha: 0.5, tint: 0.5 },
-      ];
-    for (let i = 0; i < layers.length; i++) {
-      const l = layers[i];
-      const top = cam.y * l.f;
-      const s0 = Math.floor(top / 900) - 1;
-      const s1 = Math.floor((top + vh) / 900) + 1;
-      ctx.save();
-      ctx.globalAlpha = l.alpha;
-      ctx.fillStyle = mixHex(pal.rock, pal.bgBottom, l.tint);
-      for (let s = s0; s <= s1; s++) {
-        ctx.save();
-        ctx.translate(0, s * 900 - top);
-        ctx.fill(rockPath(i, s, l.amp, l.step));
-        ctx.restore();
-      }
-      ctx.restore();
-    }
-  }
+  // ----------------------------------------------------------------- tube
 
-  // Vertical streaks that lengthen with speed: the screen physically opens up
-  // as you accelerate, which is the cheapest and most effective speed cue.
-  speedLines(ctx, run, view, cam, pal, opt) {
-    if (opt.reduceGlow) return;
-    const k = cam.speedK;
-    if (k < 0.04) return;
-    const n = Math.round(k * 26);
-    ctx.save();
-    ctx.strokeStyle = withAlpha(pal.accent, 0.10 + k * 0.28);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const seed = (i * 9301 + Math.floor(cam.y / 220) * 49297) % 233280;
-      const x = (seed / 233280) * VW;
-      const y = ((seed * 7 + this.t * 900 * (0.6 + k)) % (view.vh + 400)) - 200;
-      const len = 70 + k * 260;
-      ctx.moveTo(x, y);
-      ctx.lineTo(x, y + len);
-    }
-    ctx.stroke();
-    ctx.restore();
-  }
+  tube(ctx, run, view, pal, opt) {
+    const sides = TUBE.sides;
+    const rad = TUBE.radius;
+    // Rings double their spacing as the bore speeds up, so they keep arriving
+    // at a readable rate instead of strobing. Doubling rather than scaling
+    // means the surviving rings stay exactly where they were — every other one
+    // simply drops out — so the tube never appears to slide underneath you.
+    const want = (speedFloor(run.dist) * 0.34) / TUBE.ringGap;
+    const gap = TUBE.ringGap * Math.pow(2, Math.max(0, Math.round(Math.log2(want))));
+    const startZ = Math.floor((this.camZ + TUBE.near * 0.5) / gap) * gap;
+    const smear = opt.reduceGlow ? 0 : WARP.smear * this.w;
 
-  // ----------------------------------------------------------------- walls
-
-  walls(ctx, run, view, cam, pal, opt) {
-    const top = cam.y - 160;
-    const bot = cam.y + view.vh + 160;
-    const step = 56;
-
-    const masses = new Path2D();
-    masses.moveTo(-60, top - cam.y);
-    for (let y = top; y <= bot; y += step) masses.lineTo(centreX(y) - halfGap(y), y - cam.y);
-    masses.lineTo(-60, bot - cam.y);
-    masses.closePath();
-    masses.moveTo(VW + 60, top - cam.y);
-    for (let y = top; y <= bot; y += step) masses.lineTo(centreX(y) + halfGap(y), y - cam.y);
-    masses.lineTo(VW + 60, bot - cam.y);
-    masses.closePath();
-
-    ctx.save();
-    ctx.fillStyle = '#04040a';
-    ctx.fill(masses);
-
-    // Strata, confined to the rock.
-    ctx.save();
-    ctx.clip(masses);
-    this.parallax(ctx, view, cam, pal, opt);
-    ctx.restore();
-
-    // Accent edge: wide-and-faint, then solid. Glow without shadowBlur.
-    for (const pass of [{ w: 12, a: 0.20 }, { w: 3.5, a: 1 }]) {
-      ctx.strokeStyle = withAlpha(pal.accent, pass.a);
-      ctx.lineWidth = pass.w;
+    // Longitudinal edges: the eight seams running away from you. These carry
+    // most of the sense of speed, so they get the smear treatment.
+    for (let i = 0; i < sides; i++) {
+      const a = (i / sides) * TAU;
       ctx.beginPath();
-      for (let y = top; y <= bot; y += step) {
-        const x = centreX(y) - halfGap(y);
-        if (y === top) ctx.moveTo(x, y - cam.y);
-        else ctx.lineTo(x, y - cam.y);
+      let started = false;
+      for (let z = startZ; z < this.camZ + TUBE.far; z += gap) {
+        const p = this.project(a, rad, z, run.angle);
+        if (p.s < 0) continue;
+        if (!started) {
+          ctx.moveTo(p.x, p.y);
+          started = true;
+        } else ctx.lineTo(p.x, p.y);
       }
-      ctx.stroke();
-      ctx.beginPath();
-      for (let y = top; y <= bot; y += step) {
-        const x = centreX(y) + halfGap(y);
-        if (y === top) ctx.moveTo(x, y - cam.y);
-        else ctx.lineTo(x, y - cam.y);
-      }
+      if (!started) continue;
+      ctx.strokeStyle = withAlpha(pal.edge, 0.16 + this.w * 0.12);
+      ctx.lineWidth = 1.5 + this.w * 1.5;
       ctx.stroke();
     }
-    ctx.restore();
-  }
 
-  // --------------------------------------------------------------- content
+    // Rings. Nearer rings are brighter, wider and — at speed — smeared into
+    // the direction they are travelling on screen.
+    for (let z = startZ; z < this.camZ + TUBE.far; z += gap) {
+      const dz = z - this.camZ;
+      const fade = 1 - clamp(dz / TUBE.far, 0, 1);
+      if (fade <= 0.02) continue;
+      const col = this.depthColour(pal.edge, dz, pal);
 
-  world(ctx, run, view, cam, pal, opt) {
-    const top = cam.y - 200;
-    const bot = cam.y + view.vh + 200;
-
-    // -- best-depth ghost: you physically fly past your own record
-    const bestY = run.bestKnown * PX_PER_M;
-    if (run.bestKnown > 0 && bestY > top && bestY < bot) {
-      const y = bestY - cam.y;
-      ctx.save();
-      ctx.strokeStyle = withAlpha('#FFD34F', 0.9);
-      ctx.lineWidth = 2;
-      ctx.setLineDash([14, 10]);
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(VW, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#FFD34F';
-      ctx.font = '800 22px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(`YOUR BEST · ${Math.round(run.bestKnown)} m`, VW / 2, y - 12);
-      ctx.restore();
-    }
-
-    for (const chunk of run.world.live()) {
-      if (chunk.y1 < top || chunk.y0 > bot) continue;
-
-      // -- anchors
-      for (const a of chunk.anchors) {
-        const y = a.y - cam.y;
-        if (y < -80 || y > view.vh + 80) continue;
-        const isTarget = a === run.target;
-        const isHooked = a === run.anchor;
-        const pop = isHooked ? 1 + Math.max(0, 0.8 - run.ropeAge * 4) : 1;
-        ctx.save();
-        ctx.translate(a.x, y);
-        ctx.rotate(this.t * 0.6);
-        const r = 17 * pop;
-        for (const pass of [{ w: 9, al: isTarget ? 0.35 : 0.14 }, { w: 3, al: isTarget ? 1 : 0.5 }]) {
-          ctx.strokeStyle = withAlpha(pal.accent, pass.al);
-          ctx.lineWidth = pass.w;
-          ctx.beginPath();
-          ctx.arc(0, 0, r, 0, TAU);
-          ctx.stroke();
-        }
-        if (isTarget) {
-          ctx.strokeStyle = withAlpha(pal.accent, 0.85);
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          for (let i = 0; i < 4; i++) {
-            const ang = (i / 4) * TAU;
-            ctx.moveTo(Math.cos(ang) * (r + 8), Math.sin(ang) * (r + 8));
-            ctx.lineTo(Math.cos(ang) * (r + 17), Math.sin(ang) * (r + 17));
-          }
-          ctx.stroke();
-        }
-        ctx.restore();
-      }
-
-      // -- gems
-      for (const g of chunk.gems) {
-        if (g.taken) continue;
-        const y = g.y - cam.y;
-        if (y < -60 || y > view.vh + 60) continue;
-        ctx.save();
-        ctx.translate(g.x, y);
-        ctx.rotate(this.t * 1.6);
-        for (const pass of [{ s: 1.9, a: 0.25 }, { s: 1, a: 1 }]) {
-          ctx.fillStyle = withAlpha('#FFD34F', pass.a);
-          ctx.beginPath();
-          ctx.moveTo(0, -15 * pass.s);
-          ctx.lineTo(11 * pass.s, 0);
-          ctx.lineTo(0, 15 * pass.s);
-          ctx.lineTo(-11 * pass.s, 0);
-          ctx.closePath();
-          ctx.fill();
-        }
-        ctx.restore();
-      }
-
-      // -- hazards
-      for (const h of chunk.hazards) {
-        const y = h.cy - cam.y;
-        if (y < -160 || y > view.vh + 160) continue;
-        ctx.save();
-        ctx.translate(h.cx, y);
-
-        if (h.type === HAZ.SAW || h.type === HAZ.ORBIT) {
-          if (h.type === HAZ.ORBIT) {
-            // Show the orbit so the risky anchor reads as a decision.
-            ctx.save();
-            ctx.translate(h.x - h.cx, h.y - h.cy);
-            ctx.strokeStyle = withAlpha(pal.hazard, 0.22);
-            ctx.lineWidth = 2;
-            ctx.setLineDash([8, 12]);
-            ctx.beginPath();
-            ctx.arc(0, 0, h.orbitR, 0, TAU);
-            ctx.stroke();
-            ctx.restore();
-          }
-          ctx.rotate(this.t * h.spin);
-          for (const pass of [{ s: 1.35, a: 0.22 }, { s: 1, a: 1 }]) {
-            ctx.fillStyle = withAlpha(pal.hazard, pass.a);
-            ctx.beginPath();
-            const teeth = 9;
-            for (let i = 0; i < teeth * 2; i++) {
-              const rr = (i % 2 === 0 ? h.r : h.r * 0.66) * pass.s;
-              const ang = (i / (teeth * 2)) * TAU;
-              const px = Math.cos(ang) * rr;
-              const py = Math.sin(ang) * rr;
-              if (i === 0) ctx.moveTo(px, py);
-              else ctx.lineTo(px, py);
-            }
-            ctx.closePath();
-            ctx.fill();
-          }
-          ctx.fillStyle = '#04040a';
-          ctx.beginPath();
-          ctx.arc(0, 0, h.r * 0.30, 0, TAU);
-          ctx.fill();
-        } else if (h.type === HAZ.CRUSHER) {
-          for (const pass of [{ p: 7, a: 0.20 }, { p: 0, a: 1 }]) {
-            ctx.fillStyle = withAlpha(pal.hazard, pass.a);
-            ctx.fillRect(-h.w / 2 - pass.p, -h.h / 2 - pass.p, h.w + pass.p * 2, h.h + pass.p * 2);
-          }
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(-h.w / 2, -h.h / 2, h.w, h.h);
-          ctx.clip();
-          ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-          ctx.lineWidth = 9;
-          ctx.beginPath();
-          for (let i = -h.h; i < h.w + h.h; i += 26) {
-            ctx.moveTo(-h.w / 2 + i, -h.h / 2);
-            ctx.lineTo(-h.w / 2 + i - h.h, h.h / 2);
-          }
-          ctx.stroke();
-          ctx.restore();
-        } else if (h.type === HAZ.SPIKE) {
-          const dir = -h.side; // teeth point into the shaft
-          for (const pass of [{ s: 1.22, a: 0.20 }, { s: 1, a: 1 }]) {
-            ctx.fillStyle = withAlpha(pal.hazard, pass.a);
-            ctx.beginPath();
-            ctx.moveTo(0, (-h.h / 2) * pass.s);
-            ctx.lineTo(dir * h.w * pass.s, 0);
-            ctx.lineTo(0, (h.h / 2) * pass.s);
-            ctx.closePath();
-            ctx.fill();
-          }
-        }
-        ctx.restore();
-      }
-    }
-  }
-
-  // ------------------------------------------------------------ the diver
-
-  diver(ctx, run, view, cam, pal, opt) {
-    // -- predicted swing arc, drawn before you ever touch the screen
-    if (run.arc.length && !run.dead) {
-      ctx.save();
-      ctx.fillStyle = withAlpha(pal.accent, 0.5);
-      for (let i = 0; i < run.arc.length; i += 2) {
-        const y = run.arc[i + 1] - cam.y;
+      for (let pass = smear > 0.02 ? 0 : 1; pass < 2; pass++) {
+        // Pass 0 is the smear: the same ring drawn slightly nearer, faint.
+        const zz = pass === 0 ? z - run.speed * 0.016 * smear * 6 : z;
         ctx.beginPath();
-        ctx.arc(run.arc[i], y, 3, 0, TAU);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    // -- trail ribbon, lengthening and shifting hue with the chain
-    if (run.trail.length > 1) {
-      ctx.save();
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      const hueShift = Math.min(run.combo, 30) / 30;
-      const col = mixHex(pal.accent, '#FFD34F', hueShift);
-      for (let i = 0; i < run.trail.length - 1; i++) {
-        const a = run.trail[i];
-        const b = run.trail[i + 1];
-        const k = 1 - i / run.trail.length;
-        // Deliberately thinner than the rope: at a glance the player must
-        // never confuse where they have been with what they are attached to.
-        ctx.strokeStyle = withAlpha(col, 0.10 + k * 0.45);
-        ctx.lineWidth = 1.5 + k * 5;
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y - cam.y);
-        ctx.lineTo(b.x, b.y - cam.y);
+        for (let i = 0; i <= sides; i++) {
+          const a = ((i % sides) / sides) * TAU;
+          const p = this.project(a, rad, zz, run.angle);
+          if (p.s < 0) break;
+          if (i === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+        ctx.strokeStyle = withAlpha(col, pass === 0 ? fade * 0.22 : fade * 0.75);
+        ctx.lineWidth = (pass === 0 ? 4 : 1.6) + fade * this.w * 2.5;
         ctx.stroke();
       }
-      ctx.restore();
     }
+  }
 
-    // -- rope
-    if (run.hook !== 0) {
-      const ax = run.hook === 1 ? run.hx : run.anchor.x;
-      const ay = (run.hook === 1 ? run.hy : run.anchor.y) - cam.y;
-      const dy = run.y - cam.y;
-      const d = Math.hypot(run.x - ax, run.y - (ay + cam.y));
-      ctx.save();
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      if (run.hook === 2 && d < run.L - 6) {
-        // Slack rope sags, and snaps straight the frame it goes taut. This is
-        // the clearest possible signal of when the pendulum takes over.
-        const sag = Math.min(90, (run.L - d) * 0.6);
-        ctx.quadraticCurveTo((ax + run.x) / 2, (ay + dy) / 2 + sag, run.x, dy);
-      } else {
-        ctx.lineTo(run.x, dy);
+  // ------------------------------------------------------------ obstacles
+
+  obstacles(ctx, run, view, pal, opt) {
+    const t = run.z / 1000;
+    const rad = TUBE.radius;
+    const inner = rad * 0.68; // a wall band, not a disc — the bore must stay clear
+    const smear = opt.reduceGlow ? 0 : WARP.smear * this.w;
+
+    // Nearest last, so the thing about to hit you is drawn on top.
+    // Arcs are the most expensive thing in the frame, so they are culled well
+    // before the tube itself and only the nearest few get the smear pass.
+    const arcFar = TUBE.far * 0.62;
+    const list = this._list || (this._list = []);
+    list.length = 0;
+    for (const p of run.track.planes()) {
+      const dz = p.z - this.camZ;
+      // Anything nearer than the ship's own plane is already behind you, and
+      // at this focal length it would fill the entire screen.
+      if (dz < TUBE.near * 0.92 || dz > arcFar) continue;
+      list.push(p);
+    }
+    list.sort((a, b) => b.z - a.z);
+
+    for (const plane of list) {
+      const dz = plane.z - this.camZ;
+      const fade = 1 - clamp(dz / TUBE.far, 0, 1);
+      const arcs = arcsAt(plane, t, this._arcs);
+      const col = this.depthColour(plane.grazed ? '#ffd34f' : pal.hazard, dz, pal);
+      const nearEnough = dz < arcFar * 0.45;
+
+      for (let i = 0; i < arcs.length; i += 2) {
+        const c = arcs[i];
+        const half = arcs[i + 1];
+        const steps = nearEnough ? 5 : 3;
+
+        for (let pass = smear > 0.02 && nearEnough ? 0 : 1; pass < 2; pass++) {
+          const zz = pass === 0 ? plane.z - run.speed * 0.016 * smear * 5 : plane.z;
+          ctx.beginPath();
+          let ok = true;
+          for (let k = 0; k <= steps; k++) {
+            const a = c - half + (half * 2 * k) / steps;
+            const p = this.project(a, rad, zz, run.angle);
+            if (p.s < 0) {
+              ok = false;
+              break;
+            }
+            if (k === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          }
+          if (!ok) continue;
+          for (let k = steps; k >= 0; k--) {
+            const a = c - half + (half * 2 * k) / steps;
+            const p = this.project(a, inner, zz, run.angle);
+            if (p.s < 0) {
+              ok = false;
+              break;
+            }
+            ctx.lineTo(p.x, p.y);
+          }
+          if (!ok) continue;
+          ctx.closePath();
+          ctx.fillStyle = withAlpha(col, (pass === 0 ? 0.16 : 0.55) * (0.25 + fade * 0.75));
+          ctx.fill();
+          if (pass === 1) {
+            ctx.strokeStyle = withAlpha(col, 0.3 + fade * 0.7);
+            ctx.lineWidth = 1.5 + fade * 2;
+            ctx.stroke();
+          }
+        }
       }
-      ctx.stroke();
-      ctx.restore();
     }
+  }
 
-    if (run.dead) return;
+  // ---------------------------------------------------------------- ship
 
-    // -- the diver: a capsule aligned to its velocity vector
-    const ang = Math.atan2(run.vy, run.vx);
-    const sp = Math.hypot(run.vx, run.vy);
-    const stretch = 1 + clamp(sp / 4200, 0, 1) * 0.9;
+  ship(ctx, run, view, pal) {
+    // Always at the bottom of the bore, on the player plane. Drawn from the
+    // same projection as everything else, so it banks and bows with the world
+    // — but its world radius is divided back out by the focal length, so its
+    // SCREEN position is fixed. Without that the widening field of view slides
+    // the ship off the bottom of the display at speed, and the one thing that
+    // must never become unreadable is where you are.
+    const r = TUBE.radius * 0.80 * (WARP.fovMin / this.fov);
+    const p = this.project(run.angle, r, run.z + 26, run.angle);
+    if (p.s < 0) return;
+    const size = 26 + this.w * 10;
     ctx.save();
-    ctx.translate(run.x, run.y - cam.y);
-    ctx.rotate(ang);
-    for (const pass of [{ s: 2.0, a: 0.22 }, { s: 1, a: 1 }]) {
-      ctx.fillStyle = withAlpha('#FFFFFF', pass.a);
+    ctx.translate(p.x, p.y);
+    // Bank into the turn.
+    ctx.rotate(clamp(run.angVel * 0.06, -0.5, 0.5));
+    for (const pass of [{ s: 2.1, a: 0.22 }, { s: 1, a: 1 }]) {
+      ctx.fillStyle = withAlpha(run.hitFlash > 0 ? '#ff3b3b' : '#ffffff', pass.a);
       ctx.beginPath();
-      const w = 16 * stretch * pass.s;
-      const h = 9 * pass.s;
-      ctx.ellipse(0, 0, w, h, 0, 0, TAU);
+      ctx.moveTo(0, -size * 0.75 * pass.s);
+      ctx.lineTo(size * 0.62 * pass.s, size * 0.5 * pass.s);
+      ctx.lineTo(0, size * 0.22 * pass.s);
+      ctx.lineTo(-size * 0.62 * pass.s, size * 0.5 * pass.s);
+      ctx.closePath();
       ctx.fill();
     }
     ctx.restore();
 
-    // -- whipcrack chromatic pop
-    if (run.whipT > 0 && !opt.reduceGlow) {
-      const a = run.whipT / 0.14;
+    // Thrust plume, length driven by speed.
+    if (this.w > 0.03) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = a * 0.5;
-      ctx.fillStyle = '#ff2b5e';
-      ctx.beginPath();
-      ctx.arc(run.x + 4, run.y - cam.y, 16, 0, TAU);
-      ctx.fill();
-      ctx.fillStyle = '#2bd7ff';
-      ctx.beginPath();
-      ctx.arc(run.x - 4, run.y - cam.y, 16, 0, TAU);
-      ctx.fill();
+      const g = ctx.createLinearGradient(p.x, p.y, p.x, p.y + 60 + this.w * 120);
+      g.addColorStop(0, withAlpha(pal.edge, 0.5 * this.w + 0.15));
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(p.x - 26, p.y, 52, 70 + this.w * 130);
       ctx.restore();
     }
   }
 
-  // -------------------------------------------------------- the Collapse
+  // ------------------------------------------------------------- overlays
 
-  collapse(ctx, run, view, cam, pal) {
-    const y = run.collapseY - cam.y;
-    if (y < -400) return;
-    ctx.save();
-    // The mass above.
-    ctx.fillStyle = '#120206';
-    ctx.fillRect(-40, -600, VW + 80, y + 600);
-
-    // Grinding teeth along its face.
-    ctx.fillStyle = '#2a0410';
-    ctx.beginPath();
-    ctx.moveTo(-40, y);
-    const w = 46;
-    const wob = Math.sin(this.t * 22) * 7;
-    for (let x = -40; x < VW + 60; x += w) {
-      ctx.lineTo(x + w / 2, y + 30 + ((x / w) % 2 === 0 ? wob : -wob));
-      ctx.lineTo(x + w, y);
-    }
-    ctx.lineTo(VW + 40, -600);
-    ctx.lineTo(-40, -600);
-    ctx.closePath();
-    ctx.fill();
-
-    for (const pass of [{ w: 14, a: 0.30 }, { w: 4, a: 1 }]) {
-      ctx.strokeStyle = withAlpha('#ff2020', pass.a);
-      ctx.lineWidth = pass.w;
-      ctx.beginPath();
-      ctx.moveTo(-40, y);
-      for (let x = -40; x < VW + 60; x += w) {
-        ctx.lineTo(x + w / 2, y + 30 + ((x / w) % 2 === 0 ? wob : -wob));
-        ctx.lineTo(x + w, y);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  // -------------------------------------------------------------- overlays
-
-  overlays(ctx, run, view, cam, pal, opt) {
+  overlays(ctx, run, view, pal, opt) {
     const vh = view.vh;
-    // Dread: the screen edges bleed red as the Collapse closes.
-    const gap = run.y - run.collapseY;
-    const dread = clamp(1 - gap / COLLAPSE.dreadRange, 0, 1);
-    if (dread > 0.01) {
-      const pulse = opt.reduceGlow ? 0.5 : 0.5 + 0.5 * Math.sin(this.t * 12);
-      // Quantised so the cache actually hits; createRadialGradient every frame
-      // over a full-screen fill is one of the most expensive things here.
-      const a = Math.round((0.16 + dread * (0.28 + pulse * 0.16)) * 24) / 24;
-      ctx.fillStyle = cachedRadialGradient(
-        ctx, `dread:${a}:${Math.round(vh)}`,
-        VW / 2, vh / 2, vh * 0.30, vh * 0.72,
-        [[0, 'rgba(0,0,0,0)'], [1, withAlpha('#ff2020', a)]]
-      );
+
+    // Speed vignette closes in as the warp rises.
+    if (this.w > 0.02) {
+      const g = ctx.createRadialGradient(this.cx, this.cy, vh * (0.44 - this.w * 0.16), this.cx, this.cy, vh * 0.80);
+      g.addColorStop(0, 'rgba(0,0,0,0)');
+      g.addColorStop(1, `rgba(0,0,0,${(0.18 + this.w * 0.42).toFixed(3)})`);
+      ctx.fillStyle = g;
       ctx.fillRect(0, 0, VW, vh);
     }
 
-    // Speed vignette: tightens as you accelerate.
-    if (cam.speedK > 0.02 && !opt.reduceGlow) {
-      const q = Math.round(cam.speedK * 12) / 12;
-      ctx.fillStyle = cachedRadialGradient(
-        ctx, `vig:${q}:${Math.round(vh)}`,
-        VW / 2, vh / 2, vh * (0.46 - q * 0.10), vh * 0.78,
-        [[0, 'rgba(0,0,0,0)'], [1, `rgba(0,0,0,${(0.20 + q * 0.30).toFixed(3)})`]]
-      );
+    // Chromatic separation at the edges — the lens giving up.
+    if (this.w > WARP.shakeAt && !opt.reduceGlow) {
+      const k = (this.w - WARP.shakeAt) / (1 - WARP.shakeAt);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = k * 0.13;
+      ctx.fillStyle = '#ff2b5e';
+      ctx.fillRect(-6 * k, 0, VW, vh);
+      ctx.fillStyle = '#2bd7ff';
+      ctx.fillRect(6 * k, 0, VW, vh);
+      ctx.restore();
+    }
+
+    if (run.hitFlash > 0) {
+      ctx.save();
+      ctx.fillStyle = withAlpha('#ff2020', run.hitFlash * 0.5);
       ctx.fillRect(0, 0, VW, vh);
+      ctx.restore();
+    }
+    if (run.grazeFlash > 0 && !opt.reduceGlow) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = withAlpha('#ffd34f', run.grazeFlash * 0.28);
+      ctx.fillRect(0, 0, VW, vh);
+      ctx.restore();
     }
   }
 }

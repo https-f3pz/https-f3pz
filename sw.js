@@ -5,7 +5,7 @@
 // version ships by bumping CACHE, which precaches the new shell in the
 // background and swaps it in on the next launch.
 
-const CACHE = 'hookfall-v1';
+const CACHE = 'redshift-v1';
 
 const SHELL = [
   './',
@@ -23,7 +23,7 @@ const SHELL = [
   './src/core/widgets.js',
   './src/game/game.js',
   './src/game/config.js',
-  './src/game/world.js',
+  './src/game/track.js',
   './src/game/run.js',
   './src/game/render.js',
   './src/game/hud.js',

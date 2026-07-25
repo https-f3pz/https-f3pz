@@ -1,182 +1,196 @@
-// HOOKFALL — every tunable number.
+// REDSHIFT — every tunable number.
 //
-// The world is a fixed 720-wide virtual portrait space so that a number tuned
-// once is correct on every phone; game.js scales it to the device. Depth is
-// measured in metres at 20 px/m, so terminal velocity (2550 px/s) reads as a
-// believable 127 m/s.
+// The whole game is one idea: you fly down a tube in real perspective, and
+// your velocity distorts the projection. Faster means a wider field of view,
+// walls that bow outward, geometry that smears along its own motion, and
+// colour that Doppler-shifts blue ahead / red behind.
+//
+// Because speed is also the score, the distortion IS the readout — and the
+// better you play, the harder the world becomes to read.
 
-export const VW = 720;
+export const VW = 720; // virtual width; game.js scales it to the device
 export const VH_MIN = 1120;
 export const VH_MAX = 1600;
-export const PX_PER_M = 20;
+
+// ----------------------------------------------------------------- the tube
+
+export const TUBE = {
+  sides: 8, // an octagonal bore reads cleanly at any distortion
+  radius: 300, // world units from axis to wall
+  near: 240, // camera sits this far back from the player plane
+  far: 4200, // draw distance in z
+  ringGap: 340, // spacing of the structural rings
+};
 
 // ------------------------------------------------------------------ physics
 
-export const PHYS = {
-  // Terminal velocity is a reaction-time budget, not a bragging number. At
-  // 2550 px/s the diver crossed a 1558px viewport in 0.6s, which left about
-  // 400ms to read and answer a hazard — measured, that produced five-second
-  // dives. 1900 px/s gives ~0.8s of sight-line and the same sense of speed.
-  gravity: 1150,
-  dragFree: 0.00087, // quadratic: terminal = sqrt(g/k) = 1150 px/s
-  dragHooked: 0.00030, // the rope lets you keep more speed through an arc
-  maxSpeed: 2400, // hard ceiling; without it the reel pump is unbounded
-  hookSpeed: 3000,
-  hookRange: 420,
-  ropeMin: 110,
-  ropeMax: 330,
-  reelMin: 100,
-  reelMax: 380,
-  reelRate: 300,
-  reelDeadzone: 30,
-  snapSpeed: 900, // tangential speed needed for the release boost
-  snapBoost: 1.08,
-  whipSpeed: 1150, // tangential speed that counts as a whipcrack
-  // When a rigid rope goes taut it destroys the velocity component along its
-  // length — and you attach with almost all your speed pointing that way, so a
-  // physically exact constraint ate the dive: measured, one second of swinging
-  // bought 42px of lateral movement in a 500px shaft. This converts part of
-  // that would-be-destroyed speed into tangential motion instead. It is not
-  // strictly physical; it is the difference between a rope and an anchor.
-  swingConvert: 0.45,
-  wallBounce: 0.42, // walls are solid but survivable — see below
-  wallScrape: 0.55,
+export const SPEED = {
+  start: 900,
+  min: 620,
+  max: 5200,
+
+  // The bore pulls harder the deeper you are: a speed FLOOR that rises with
+  // distance. Without it the economy self-stabilises — a gate bonus paid per
+  // plane crossed is worth more per second the faster you go, so gains and
+  // decay balance at `decay x spacing / gateGain` and the view stops distorting
+  // at whatever that happens to be. The floor is what makes the distortion
+  // escalate across a run, which is the whole premise.
+  // The floor tops out below the shatter point's reach only slowly, so a
+  // perfectly clean pilot still eventually meets a speed their hull cannot
+  // take a hit at — but everything above the floor has to be earned by
+  // grazing, which is where skill and style show up.
+  pullCap: 0.90, // the floor asymptotes here, as a fraction of max
+  pullK: 65000, // e-folding distance of the ramp
+  pullBack: 0.25, // per second: how hard you are dragged back up to the floor
+
+  decay: 190, // units/sec² bled from anything above the floor
+  grazeGain: 240, // per near miss — the only real surplus
+  gateGain: 45, // per gate: not quite enough to hold station on its own
+  hitLoss: 0.72, // multiplier applied on a clip — the real cost is the crack
+
+  // Failure. Clipping a wall is survivable while you are slow and the picture
+  // is honest; at speed, with a view you can no longer trust, it is not.
+  shatter: 0.86, // warp at which a clip becomes fatal
+  crack: 0.03, // every clip lowers that threshold hard
+  // ...and the hull tires on its own, with TIME. Without this, refusing to go
+  // fast is simply the best strategy — a slow pilot survives longer and
+  // travels further for it, and the whole distortion becomes optional.
+  fatigue: 0.0062, // per second
+  // A near miss is the ONLY thing that works the fatigue back out. That single
+  // rule closes the loop: flying close to the wall is what makes you fast and
+  // what keeps you alive, and playing safe is a slow bleed to a hull that can
+  // no longer take the speed the bore is pulling you to.
+  anneal: 0.016, // per graze
 };
 
-// Design note: hazards are lethal, walls are not. A 380px pinch taken at
-// 4200 px/s gives ~90ms of reaction; making the walls themselves lethal on top
-// of that turns the game into memorisation. Instead a wall costs you most of
-// your speed, which the Collapse immediately punishes — the same pressure,
-// expressed as a setback rather than a restart.
+/**
+ * The speed the bore is pulling you to at this distance. A pure function of
+ * distance so the track generator can use it too, and stay deterministic.
+ */
+export function speedFloor(dist) {
+  const top = SPEED.max * SPEED.pullCap;
+  return SPEED.start + (top - SPEED.start) * (1 - Math.exp(-dist / SPEED.pullK));
+}
 
-export const COLLAPSE = {
-  startGap: 1500, // px above the diver at t=0
-  baseSpeed: 620,
-  accel: 4.0, // px/s² of extra chase speed per second of run time
-  maxLag: 2600, // never falls further behind than this, or it stops mattering
-  dreadRange: 700, // HUD/audio dread band
+export const SHIP = {
+  // Angular position around the bore, in radians. One thumb, one axis.
+  turnRate: 5.6, // rad/sec at full deflection
+  dragGain: 0.0135, // radians per pixel of thumb travel
+  maxStep: 0.42, // rad per substep — stops a flick teleporting you
+  radius: 0.16, // angular half-width for collision
+  z: 0, // the player plane is always z = 0
+};
+
+// How hard the projection lies, as a function of speed (0..1).
+export const WARP = {
+  fovMin: 620, // focal length at rest — a calm, narrow view
+  fovMax: 1180, // and at full speed: much wider, everything rushes past
+  barrel: 0.42, // radial bow of the walls at full speed
+  smear: 0.55, // how far geometry streaks along its own motion
+  doppler: 0.95, // strength of the blue-ahead / red-behind shift
+  roll: 0.10, // camera roll induced by turning
+  shakeAt: 0.72, // speed fraction where the frame starts to buzz
 };
 
 export const GRAZE = {
-  radius: 34,
-  minSpeed: 620,
-  window: 2.6,
-  maxCombo: 30,
-  multPer: 0.12,
-  points: 30,
+  window: 2.4, // seconds before a chain lapses
+  maxCombo: 24,
+  multPer: 0.14,
+  // Radians of clearance, measured from the hull's edge, that counts as a near
+  // miss. A single open sector is 0.79 rad wide and the hull eats 0.32 of
+  // that, so this is roughly the outer half of the tightest gap in the game.
+  angle: 0.12,
 };
 
-// ------------------------------------------------------------------- biomes
+// ------------------------------------------------------------------- zones
+// Each zone is a palette plus a rule change. Crossing one is a full-screen
+// event, and "I have never seen the last one" is the retention hook.
 
-export const BIOMES = [
-  { at: 0, name: 'THE MOUTH', bgTop: '#0b1020', bgBottom: '#16203a', accent: '#57e0ff', hazard: '#ff3b6b', rock: '#070b16' },
-  { at: 2500, name: 'THE VEIN', bgTop: '#1a0b16', bgBottom: '#35102a', accent: '#ff7ae0', hazard: '#ffd23b', rock: '#12060f' },
-  { at: 5000, name: 'SALT', bgTop: '#0d1a17', bgBottom: '#123028', accent: '#7bffb0', hazard: '#ff8a3b', rock: '#07120f' },
-  { at: 7500, name: 'THE HUM', bgTop: '#140c22', bgBottom: '#2a1145', accent: '#b98cff', hazard: '#ff4d4d', rock: '#0d0718' },
-  { at: 10000, name: 'BLACK GLASS', bgTop: '#050507', bgBottom: '#101018', accent: '#ffffff', hazard: '#ff2020', rock: '#030304' },
+export const ZONES = [
+  { at: 0, name: 'CALIBRATION', wall: '#1b3a6b', edge: '#57e0ff', hazard: '#ff3b6b', fog: '#050912' },
+  { at: 25000, name: 'DRIFT', wall: '#123a44', edge: '#5affd0', hazard: '#ff8a3b', fog: '#04100f' },
+  { at: 70000, name: 'CASCADE', wall: '#3a1550', edge: '#c07aff', hazard: '#ffd23b', fog: '#0a0518' },
+  { at: 140000, name: 'REDSHIFT', wall: '#5a1330', edge: '#ff7ae0', hazard: '#ff2020', fog: '#12030a' },
+  { at: 230000, name: 'EVENT HORIZON', wall: '#101018', edge: '#ffffff', hazard: '#ff2020', fog: '#000000' },
 ];
 
-export function biomeAt(metres) {
-  let b = BIOMES[0];
-  for (const x of BIOMES) if (metres >= x.at) b = x;
-  return b;
+const BLEND = 6000; // units of crossfade before a zone boundary
+
+export function zoneAt(dist) {
+  let z = ZONES[0];
+  for (const x of ZONES) if (dist >= x.at) z = x;
+  return z;
 }
 
-// Blend factor between the current biome and the next, over 400m of depth.
-export function biomeBlend(metres) {
-  for (let i = BIOMES.length - 1; i >= 0; i--) {
-    const b = BIOMES[i];
-    if (metres >= b.at) {
-      const next = BIOMES[i + 1];
-      if (!next) return { from: b, to: b, k: 0 };
-      const k = Math.min(1, Math.max(0, (metres - (next.at - 400)) / 400));
-      return { from: b, to: next, k };
+export function zoneBlend(dist) {
+  for (let i = ZONES.length - 1; i >= 0; i--) {
+    const z = ZONES[i];
+    if (dist >= z.at) {
+      const next = ZONES[i + 1];
+      if (!next) return { from: z, to: z, k: 0 };
+      return { from: z, to: next, k: Math.min(1, Math.max(0, (dist - (next.at - BLEND)) / BLEND)) };
     }
   }
-  return { from: BIOMES[0], to: BIOMES[0], k: 0 };
+  return { from: ZONES[0], to: ZONES[0], k: 0 };
 }
 
-// -------------------------------------------------------------- chasm shape
+// --------------------------------------------------------------- obstacles
 
-// The shaft snakes and pinches. Both are pure functions of depth, so the world
-// is stateless and any point can be evaluated without generating what's above.
-// The shaft snakes AND pinches, and the two have to coexist inside the 720
-// world: max wander (100) + max half-gap (250) = 350, which is exactly the
-// half-width. Let these drift apart and the walls — and the diver clamped
-// between them — slide off the side of the screen.
-const MAX_WANDER = 60;
-const MAX_HALF = 295;
+export const OBS = { WALLS: 0, SPINNER: 1, IRIS: 2, COMB: 3 };
 
-export function halfGap(y) {
-  const m = y / PX_PER_M;
-  const base = 295 - Math.min(1, m / 12000) * 80; // 295 -> 215 over 12km
-  return Math.max(200, Math.min(MAX_HALF, base + 60 * Math.sin(y / 1700) + 40 * Math.sin(y / 620 + 2.1)));
-}
-
-export function centreX(y) {
-  return VW / 2 + 42 * Math.sin(y / 1900) + 18 * Math.sin(y / 770 + 1.3);
-}
-
-export const CHUNK = 900; // px of depth generated at a time
-
-// ------------------------------------------------------------------ hazards
-
-export const HAZ = { SAW: 0, CRUSHER: 1, SPIKE: 2, ORBIT: 3 };
-
-// ----------------------------------------------------------------- upgrades
+// World units of track generated at a time. Each chunk is one pattern, so this
+// also sets how long you spend in a single idea — around six seconds early on,
+// dropping to under two once the bore is really moving.
+export const CHUNK = 6000;
 
 export const UPGRADES = [
   {
-    id: 'reach', name: 'REACH', blurb: 'HOOK RANGE',
-    costs: [150, 400, 900, 1800, 3200],
-    value: (t) => 420 + t * 44, unit: (t) => `${420 + t * 44} px`,
+    id: 'grip', name: 'GRIP', blurb: 'TURN RATE',
+    costs: [120, 320, 700, 1400, 2600],
+    value: (t) => 5.6 + t * 0.55, unit: (t) => `${(5.6 + t * 0.55).toFixed(1)} rad/s`,
   },
   {
-    id: 'snap', name: 'SNAP', blurb: 'RELEASE BOOST',
-    costs: [150, 400, 900, 1800, 3200],
-    value: (t) => 1.08 + t * 0.016, unit: (t) => `+${Math.round((0.08 + t * 0.016) * 100)}%`,
+    id: 'lens', name: 'LENS', blurb: 'WARP ONSET',
+    costs: [120, 320, 700, 1400, 2600],
+    // Higher tiers delay the distortion, trading spectacle for readability.
+    value: (t) => 1 - t * 0.09, unit: (t) => `${100 - t * 9}% DISTORTION`,
   },
   {
-    id: 'winch', name: 'WINCH', blurb: 'REEL SPEED',
-    costs: [150, 400, 900, 1800, 3200],
-    value: (t) => 300 + t * 44, unit: (t) => `${300 + t * 44} px/s`,
+    id: 'intake', name: 'INTAKE', blurb: 'GRAZE VALUE',
+    costs: [120, 320, 700, 1400, 2600],
+    value: (t) => 240 + t * 44, unit: (t) => `+${240 + t * 44} SPEED`,
   },
   {
-    id: 'wax', name: 'WAX', blurb: 'SWING DRAG',
-    costs: [150, 400, 900, 1800, 3200],
-    value: (t) => 0.00024 - t * 0.000024, unit: (t) => `${(100 - t * 10).toFixed(0)}%`,
+    id: 'hull', name: 'HULL', blurb: 'SHATTER POINT',
+    costs: [120, 320, 700, 1400, 2600],
+    // How much warp the hull can take a hit at. This is the run-length dial:
+    // everything else being equal, you die at the first clip past this number.
+    value: (t) => SPEED.shatter + t * 0.028,
+    unit: (t) => `SHATTER AT ${Math.round((SPEED.shatter + t * 0.028) * 100)}%`,
   },
 ];
 
 export const MISSION_POOL = [
-  { id: 'graze40', text: 'GRAZE 40 TIMES IN ONE DIVE', goal: 40 },
-  { id: 'depth6k', text: 'REACH 6,000 m', goal: 6000 },
-  { id: 'gems12', text: 'COLLECT 12 GEMS', goal: 12 },
+  { id: 'dist100k', text: 'TRAVEL 100,000 UNITS', goal: 100000 },
   { id: 'chain20', text: 'HOLD A 20 CHAIN', goal: 20 },
-  { id: 'whip15', text: 'LAND 15 WHIPCRACKS', goal: 15 },
-  { id: 'speed4k', text: 'BREAK 4,000 px/s', goal: 4000 },
-  { id: 'noreel', text: 'REACH 3,000 m WITHOUT REELING', goal: 3000 },
-  { id: 'gate3', text: 'REACH BLACK GLASS (10,000 m)', goal: 10000 },
+  { id: 'top4k', text: 'REACH 4,000 SPEED', goal: 4000 },
+  { id: 'clean40', text: 'CLEAR 40 GATES WITHOUT A CLIP', goal: 40 },
+  { id: 'zone3', text: 'REACH REDSHIFT (140,000)', goal: 140000 },
+  { id: 'graze60', text: 'GRAZE 60 TIMES IN ONE RUN', goal: 60 },
 ];
 
 export const RANKS = [
-  { name: 'DRIFTER', at: 0 }, { name: 'DIVER', at: 1500 }, { name: 'PLUMMET', at: 4000 },
-  { name: 'FALLER', at: 8000 }, { name: 'VOIDWALKER', at: 14000 }, { name: 'ABYSSAL', at: 22000 },
+  { name: 'IDLE', at: 0 }, { name: 'COASTING', at: 40000 }, { name: 'PLANING', at: 90000 },
+  { name: 'SUPERSONIC', at: 160000 }, { name: 'BLUESHIFT', at: 260000 }, { name: 'LIGHTLIKE', at: 400000 },
 ];
 
-export function rankFor(m) {
+export function rankFor(d) {
   let r = RANKS[0];
-  for (const x of RANKS) if (m >= x.at) r = x;
+  for (const x of RANKS) if (d >= x.at) r = x;
   return r;
-}
-
-export function nextRank(m) {
-  for (const r of RANKS) if (r.at > m) return r;
-  return null;
 }
 
 export function upgradeValue(save, id) {
   const u = UPGRADES.find((x) => x.id === id);
-  const tier = save?.upgrades?.[id] ?? 0;
-  return u.value(tier);
+  return u.value(save?.upgrades?.[id] ?? 0);
 }

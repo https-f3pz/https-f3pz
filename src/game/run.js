@@ -1,20 +1,18 @@
-// One dive.
+// One run.
 //
-// Gravity is always giving you momentum and the Collapse is always taking away
-// your margin, so the run accelerates on its own and conservative play is not
-// an option. The only verb is the rope.
+// The ship holds a single angle around the bore and the tube comes at it. All
+// collision is angular and resolved at the exact z of each obstacle plane, so
+// it is unaffected by however hard the renderer is bending the picture — the
+// distortion can lie to the player, but never to the simulation.
 //
-// Simulated at a fixed 1/120s substep. Nothing here touches the canvas.
+// Fixed 1/120s substep. Nothing here touches the canvas.
 
-import {
-  VW, PX_PER_M, PHYS, COLLAPSE, GRAZE, HAZ,
-  halfGap, centreX, biomeAt, upgradeValue,
-} from './config.js';
-import { World, segPointDist, sweptCircleHit, segBoxHit } from './world.js';
+import { SPEED, SHIP, GRAZE, WARP, zoneAt, upgradeValue, speedFloor } from './config.js';
+import { Track, arcsAt, clearance, angleDiff } from './track.js';
 import { clamp } from '../core/draw.js';
 import { buzz } from '../core/input.js';
 
-const DIVER_R = 11;
+const TAU = Math.PI * 2;
 
 export class Run {
   constructor({ seed, save, loop, view, daily = false }) {
@@ -22,123 +20,101 @@ export class Run {
     this.save = save;
     this.loop = loop;
     this.daily = daily;
-    this.world = new World(this.seed);
+    this.track = new Track(this.seed);
+    this.view = view;
 
-    this.layout(view);
+    this.turnRate = upgradeValue(save, 'grip');
+    this.lens = upgradeValue(save, 'lens');
+    this.grazeGain = upgradeValue(save, 'intake');
+    // The warp a clip is survivable at. Cracks lower it, clean gates work it
+    // back up, and it is the number that decides how long a run lasts.
+    this.shatterMax = upgradeValue(save, 'hull');
+    this.shatter = this.shatterMax;
 
-    // Upgrades change how the rope behaves, never how far you can get.
-    this.hookRange = upgradeValue(save, 'reach');
-    this.snapBoost = upgradeValue(save, 'snap');
-    this.reelRate = upgradeValue(save, 'winch');
-    this.dragHooked = upgradeValue(save, 'wax');
+    this.z = 0;
+    this.pz = 0;
+    this.angle = 0;
+    this.angVel = 0;
+    this.speed = SPEED.start;
+    this.topSpeed = SPEED.start;
 
-    this.x = centreX(0);
-    this.y = 120;
-    this.px = this.x;
-    this.py = this.y;
-    this.vx = 0;
-    this.vy = 320;
-
-    // Rope: 0 idle, 1 in flight, 2 attached
-    this.hook = 0;
-    this.anchor = null;
-    this.L = 0;
-    this.hx = 0;
-    this.hy = 0;
-    this.ropeAge = 0;
-    this.whipT = 0;
-
-    this.target = null; // auto-selected anchor, always visible
-    this.arc = []; // predicted swing, recomputed per frame
-
-    this.time = 0;
-    this.depth = 0; // metres, max reached
+    this.dist = 0;
     this.score = 0;
     this.shards = 0;
-    this.gems = 0;
     this.combo = 0;
     this.comboT = 0;
     this.bestCombo = 0;
-    this.whipcracks = 0;
-    this.reeled = false;
+    this.grazes = 0;
+    this.gates = 0;
+    this.cleanGates = 0;
+    this.clips = 0;
     this.dead = false;
-    this.deathCause = '';
+    this.deathT = 0;
 
-    this.collapseY = this.y - COLLAPSE.startGap;
+    this.zone = zoneAt(0);
     this.milestone = 0;
-    this.biome = biomeAt(0);
-
     this.bestKnown = save?.best ?? 0;
     this.passedBest = (save?.best ?? 0) <= 0;
 
-    this.trail = [];
-    this.trailT = 0;
+    this.hitFlash = 0;
+    this.grazeFlash = 0;
+    this.anchorTouch = null;
+    this.anchorAngle = 0;
 
+    this._arcs = []; // reused every collision test; the hot path allocates nothing
     this.events = [];
-    this.world.ensure(this.y - 2000, this.y + 4000);
+    this.track.ensure(0, 8000);
   }
 
   layout(view) {
     this.view = view;
-    this.vh = view.vh;
   }
 
   emit(type, a, b) {
     this.events.push({ type, a, b });
   }
 
-  get speed() {
-    return Math.hypot(this.vx, this.vy);
-  }
-
   get mult() {
     return 1 + GRAZE.multPer * Math.min(this.combo, GRAZE.maxCombo);
   }
 
-  get metres() {
-    return this.y / PX_PER_M;
+  /** 0..1 — how fast we are, and therefore how hard the view lies. */
+  get warp() {
+    const k = clamp((this.speed - SPEED.start) / (SPEED.max - SPEED.start), 0, 1);
+    return k * this.lens;
   }
 
-  // ------------------------------------------------------------ the rope
+  // ---------------------------------------------------------------- steering
 
-  fire(thumbX) {
-    if (this.dead || this.hook !== 0) return;
-    const a = this.target;
-    if (!a) {
-      this.emit('whiff');
+  steer(touch, dt) {
+    if (!touch) {
+      this.anchorTouch = null;
+      // Coast to a stop rather than snapping, so letting go is not a jolt.
+      this.angVel *= Math.pow(0.0015, dt);
+      this.angle += this.angVel * dt;
       return;
     }
-    this.hook = 1;
-    this.anchor = a;
-    this.hx = this.x;
-    this.hy = this.y;
-    this.emit('fire');
-  }
-
-  release() {
-    if (this.hook === 0) return;
-    const wasAttached = this.hook === 2;
-    this.hook = 0;
-    this.anchor = null;
-    if (!wasAttached) return;
-
-    const sp = this.speed;
-    // Releasing with real tangential speed pays. This is the entire skill of
-    // the game expressed as one multiplier, and it teaches itself by feel.
-    if (sp > PHYS.snapSpeed) {
-      const k = Math.min(this.snapBoost, PHYS.maxSpeed / Math.max(1, sp));
-      this.vx *= k;
-      this.vy *= k;
+    if (!this.anchorTouch) {
+      this.anchorTouch = touch.x;
+      this.anchorAngle = this.angle;
     }
-    if (sp > PHYS.whipSpeed) {
-      this.whipcracks++;
-      this.whipT = 0.14;
-      this.score += 500 * this.mult;
-      this.loop.freeze(0.09);
-      this.emit('whip', this.x, this.y);
-      buzz(18);
-    } else {
-      this.emit('release');
+    // Relative drag: the thumb can start anywhere, and re-grip whenever.
+    const want = this.anchorAngle + (touch.x - this.anchorTouch) * SHIP.dragGain;
+    // `want` accumulates without bound while `angle` is wrapped to [0, TAU)
+    // every frame, so the raw difference is off by a whole turn near the seam.
+    // Taking the shortest signed arc is what stops the ship from reversing —
+    // and stalling under the rebase below — every time you rotate past zero.
+    let d = angleDiff(want, this.angle);
+    const step = Math.min(SHIP.maxStep, this.turnRate * dt);
+    d = clamp(d, -step, step);
+    this.angle += d;
+    this.angVel = d / dt;
+
+    // Sticky rebase: without this, dragging past the thumb's reach builds up
+    // invisible travel debt and the ship stops answering.
+    if (Math.abs(angleDiff(want, this.angle)) > 1.2) {
+      this.anchorTouch = touch.x;
+      this.anchorAngle = this.angle;
     }
   }
 
@@ -146,203 +122,31 @@ export class Run {
 
   update(dt, touch) {
     if (this.dead) {
-      this.deathT = (this.deathT ?? 0) + dt;
+      this.deathT += dt;
+      this.speed *= Math.pow(0.02, dt);
+      this.z += this.speed * dt;
       return;
     }
 
-    this.px = this.x;
-    this.py = this.y;
-    this.time += dt;
+    this.steer(touch, dt);
+    this.angle = ((this.angle % TAU) + TAU) % TAU;
 
-    this.stepHook(dt);
-    this.integrate(dt, touch);
-    this.constrain(dt, touch);
-    this.walls();
-    this.world.ensure(this.y - 1600, this.y + 3600);
-    this.world.step(this.time);
-    this.hazards();
-    this.pickups();
-    this.grazes(dt);
-    this.collapse(dt);
-    this.progress(dt);
-  }
+    // Anything above the floor bleeds away, and the bore then drags you back
+    // up to whatever it is pulling at this depth. A clip drops you well under
+    // the floor, so the distortion visibly collapses and rebuilds over about a
+    // second — that recovery is the real cost of a hit.
+    this.speed = Math.max(SPEED.min, this.speed - SPEED.decay * dt);
+    const floor = speedFloor(this.z);
+    if (this.speed < floor) this.speed = floor - (floor - this.speed) * Math.pow(SPEED.pullBack, dt);
+    if (this.speed > SPEED.max) this.speed = SPEED.max;
 
-  stepHook(dt) {
-    if (this.hook !== 1) return;
-    const a = this.anchor;
-    const dx = a.x - this.hx;
-    const dy = a.y - this.hy;
-    const d = Math.hypot(dx, dy);
-    const step = PHYS.hookSpeed * dt;
-    if (d <= step) {
-      this.hx = a.x;
-      this.hy = a.y;
-      this.hook = 2;
-      this.L = clamp(Math.hypot(this.x - a.x, this.y - a.y), PHYS.ropeMin, PHYS.ropeMax);
-      this.ropeAge = 0;
-      this.emit('attach', a.x, a.y);
-      buzz(10);
-    } else {
-      this.hx += (dx / d) * step;
-      this.hy += (dy / d) * step;
-    }
-  }
+    this.pz = this.z;
+    this.z += this.speed * dt;
+    this.dist = this.z;
+    this.track.ensure(this.z - 400, this.z + 7000);
 
-  integrate(dt, touch) {
-    const k = this.hook === 2 ? this.dragHooked : PHYS.dragFree;
-    this.vy += PHYS.gravity * dt;
-    const sp = Math.hypot(this.vx, this.vy);
-    if (sp > 0) {
-      const drag = k * sp * dt;
-      this.vx -= this.vx * drag;
-      this.vy -= this.vy * drag;
-    }
-    const cap = PHYS.maxSpeed;
-    const s2 = Math.hypot(this.vx, this.vy);
-    if (s2 > cap) {
-      this.vx = (this.vx / s2) * cap;
-      this.vy = (this.vy / s2) * cap;
-    }
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-  }
+    this.cross(dt);
 
-  constrain(dt, touch) {
-    if (this.hook !== 2) return;
-    const a = this.anchor;
-    this.ropeAge += dt;
-
-    // Reel: slide the same thumb up to shorten the rope. Optional, and the
-    // game never requires it — but conserving angular momentum means a reel at
-    // the bottom of an arc is a genuine speed pump.
-    if (touch && touch.startY != null) {
-      const slide = touch.y - touch.startY;
-      if (Math.abs(slide) > PHYS.reelDeadzone) {
-        const dir = slide < 0 ? -1 : 1;
-        const before = this.L;
-        this.L = clamp(this.L + dir * this.reelRate * dt, PHYS.reelMin, PHYS.reelMax);
-        if (dir < 0) this.reeled = true;
-        if (this.L !== before) this.pump(a, before, this.L);
-      }
-    }
-
-    let dx = this.x - a.x;
-    let dy = this.y - a.y;
-    let d = Math.hypot(dx, dy);
-    if (d <= this.L || d < 1e-6) return; // one-sided: slack rope does nothing
-
-    const nx = dx / d;
-    const ny = dy / d;
-    this.x = a.x + nx * this.L;
-    this.y = a.y + ny * this.L;
-    const vn = this.vx * nx + this.vy * ny;
-    if (vn > 0) {
-      this.vx -= nx * vn;
-      this.vy -= ny * vn;
-      // Whatever is left is purely tangential; feed part of the radial speed
-      // the constraint just ate back into it, in the direction already
-      // travelling. This is what turns the rope into a steering tool.
-      const tx = -ny;
-      const ty = nx;
-      let vt = this.vx * tx + this.vy * ty;
-      const dir = vt >= 0 ? 1 : -1;
-      vt += dir * vn * PHYS.swingConvert;
-      const capped = clamp(vt, -PHYS.maxSpeed, PHYS.maxSpeed);
-      this.vx = tx * capped;
-      this.vy = ty * capped;
-    }
-  }
-
-  // Angular momentum: shortening the rope by half doubles tangential speed.
-  // Capped, or a player can reel-spin into infinity and break the curve.
-  pump(a, rOld, rNew) {
-    if (rNew >= rOld) return;
-    const dx = this.x - a.x;
-    const dy = this.y - a.y;
-    const d = Math.hypot(dx, dy) || 1;
-    if (d < rOld - 2) return; // only pays while the rope is actually taut
-    const nx = dx / d;
-    const ny = dy / d;
-    const tx = -ny;
-    const ty = nx;
-    let vt = this.vx * tx + this.vy * ty;
-    vt *= rOld / rNew;
-    const capped = clamp(vt, -PHYS.maxSpeed, PHYS.maxSpeed);
-    this.vx = tx * capped;
-    this.vy = ty * capped;
-  }
-
-  // Walls are solid but survivable: a clip costs most of your speed, and the
-  // Collapse does the punishing. Lethal walls in a 300px shaft at 4200 px/s
-  // would make this a memorisation game.
-  walls() {
-    const g = halfGap(this.y);
-    const c = centreX(this.y);
-    const left = c - g + DIVER_R;
-    const right = c + g - DIVER_R;
-    let hit = 0;
-    if (this.x < left) {
-      this.x = left;
-      if (this.vx < 0) this.vx = -this.vx * PHYS.wallBounce;
-      hit = -1;
-    } else if (this.x > right) {
-      this.x = right;
-      if (this.vx > 0) this.vx = -this.vx * PHYS.wallBounce;
-      hit = 1;
-    }
-    if (hit) {
-      const sp = this.speed;
-      if (sp > 500) {
-        this.vy *= PHYS.wallScrape;
-        this.breakCombo();
-        this.emit('scrape', this.x, this.y);
-      }
-    }
-  }
-
-  hazards() {
-    const ax = this.px;
-    const ay = this.py;
-    const bx = this.x;
-    const by = this.y;
-    for (const chunk of this.world.live()) {
-      if (chunk.y1 < ay - 400 || chunk.y0 > by + 400) continue;
-      for (const h of chunk.hazards) {
-        let hit = false;
-        if (h.type === HAZ.SAW || h.type === HAZ.ORBIT) {
-          hit = sweptCircleHit(ax, ay, bx, by, h, h.r + DIVER_R);
-        } else if (h.type === HAZ.CRUSHER) {
-          hit = segBoxHit(ax, ay, bx, by, h.cx, h.cy, h.w / 2, h.h / 2, DIVER_R);
-        } else if (h.type === HAZ.SPIKE) {
-          hit = segBoxHit(ax, ay, bx, by, h.cx, h.cy, h.w / 2, h.h / 2, DIVER_R * 0.6);
-        }
-        if (hit) {
-          this.die('hazard');
-          return;
-        }
-      }
-    }
-  }
-
-  pickups() {
-    for (const chunk of this.world.live()) {
-      if (chunk.y1 < this.py - 200 || chunk.y0 > this.y + 200) continue;
-      for (const g of chunk.gems) {
-        if (g.taken) continue;
-        if (segPointDist(this.px, this.py, this.x, this.y, g.x, g.y) < 42) {
-          g.taken = true;
-          this.gems++;
-          const v = 250 * this.mult;
-          this.score += v;
-          this.shards += 8;
-          this.loop.freeze(0.04);
-          this.emit('gem', g.x, g.y);
-        }
-      }
-    }
-  }
-
-  grazes(dt) {
     if (this.comboT > 0) {
       this.comboT -= dt;
       if (this.comboT <= 0 && this.combo > 0) {
@@ -350,92 +154,103 @@ export class Run {
         this.combo = 0;
       }
     }
-    const sp = this.speed;
-    if (sp < GRAZE.minSpeed) return;
+    if (this.hitFlash > 0) this.hitFlash -= dt;
+    if (this.grazeFlash > 0) this.grazeFlash -= dt;
+    if (this.speed > this.topSpeed) this.topSpeed = this.speed;
 
-    const addGraze = (x, y) => {
-      this.combo++;
-      if (this.combo > this.bestCombo) this.bestCombo = this.combo;
-      this.comboT = GRAZE.window;
-      this.score += GRAZE.points * this.combo;
-      this.shards += 1;
-      this.emit('graze', x, y);
-    };
+    this.progress(dt);
+  }
 
-    // Near-misses on hazards.
-    for (const chunk of this.world.live()) {
-      if (chunk.y1 < this.py - 300 || chunk.y0 > this.y + 300) continue;
-      for (const h of chunk.hazards) {
-        const surf = h.type === HAZ.CRUSHER || h.type === HAZ.SPIKE
-          ? Math.max(h.w, h.h) / 2
-          : h.r;
-        const d = segPointDist(this.px, this.py, this.x, this.y, h.cx, h.cy) - surf - DIVER_R;
-        if (d < GRAZE.radius && d > -2) {
-          if ((h.grazeT ?? 0) <= 0) {
-            h.grazeT = 0.5;
-            addGraze(h.cx, h.cy);
-          }
-        }
-        if (h.grazeT > 0) h.grazeT -= dt;
+  // Every obstacle plane crossed this substep is resolved at its own z. At
+  // 5200 units/sec a substep covers 43 units, so more than one plane can pass
+  // in a single step and skipping any of them would be a phantom survival.
+  cross(dt) {
+    const t = this.z / 1000; // obstacle clocks run on distance, not wall time
+    for (const p of this.track.planes()) {
+      if (p.passed || p.z <= this.pz || p.z > this.z) continue;
+      p.passed = true;
+
+      const arcs = arcsAt(p, t, this._arcs);
+      // Measure from the ship's EDGE, not its centre. Without the hull's own
+      // angular width every sector seam scores exactly zero clearance, so
+      // parking on one passed every plane and grazed every plane — a line that
+      // never steers and never dies.
+      const gap = clearance(this.angle, arcs) - SHIP.radius;
+
+      if (gap < 0) {
+        this.clip(p);
+        continue;
       }
-    }
 
-    // Skimming a wall counts too — it rewards the tight line and makes long
-    // chains reachable without a hazard on every screen.
-    const g = halfGap(this.y);
-    const c = centreX(this.y);
-    const dl = this.x - (c - g);
-    const dr = c + g - this.x;
-    const near = Math.min(dl, dr) - DIVER_R;
-    if (near < GRAZE.radius && near > 1) {
-      this.wallGrazeT = (this.wallGrazeT ?? 0) - dt;
-      if (this.wallGrazeT <= 0) {
-        this.wallGrazeT = 0.34;
-        addGraze(dl < dr ? c - g : c + g, this.y);
+      this.gates++;
+      this.cleanGates++;
+      this.speed = Math.min(SPEED.max, this.speed + SPEED.gateGain);
+
+      if (gap < GRAZE.angle) {
+        // A near miss is the only real way to accelerate, so the fast line and
+        // the dangerous line are the same line.
+        this.grazes++;
+        this.combo++;
+        if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+        this.comboT = GRAZE.window;
+        this.speed = Math.min(SPEED.max, this.speed + this.grazeGain);
+        // Shaving the wall is what anneals the hull, so the risky line is also
+        // the one that lets the run continue.
+        this.shatter = Math.min(this.shatterMax, this.shatter + SPEED.anneal);
+        this.score += 90 * this.combo;
+        this.shards += 1;
+        this.grazeFlash = 0.18;
+        p.grazed = true;
+        this.emit('graze', this.combo, gap);
       }
     }
   }
 
-  breakCombo() {
+  clip(p) {
+    this.clips++;
+    this.cleanGates = 0;
+    this.hitFlash = 0.4;
     if (this.combo > 0) {
       this.emit('comboEnd', this.combo);
       this.combo = 0;
       this.comboT = 0;
     }
-  }
+    this.loop.freeze(0.07);
+    this.emit('clip');
 
-  collapse(dt) {
-    const speed = COLLAPSE.baseSpeed + COLLAPSE.accel * this.time;
-    this.collapseY += speed * dt;
-    // Never let it fall so far behind that it stops being a threat.
-    const lag = this.y - this.collapseY;
-    if (lag > COLLAPSE.maxLag) this.collapseY = this.y - COLLAPSE.maxLag;
-    if (this.collapseY >= this.y) this.die('collapse');
+    // Scraping a wall is survivable while you are slow and the picture is
+    // honest. Past the shatter point it is not — which makes the distortion a
+    // real risk rather than decoration, and ties the failure state directly to
+    // the thing the game is about. Tested at the speed of impact, before the
+    // penalty, because that is the speed you actually hit the wall at.
+    if (this.warp >= this.shatter) {
+      this.die('shattered');
+      return;
+    }
+
+    this.speed = Math.max(SPEED.min, this.speed * SPEED.hitLoss);
+    this.shatter = Math.max(0.04, this.shatter - SPEED.crack);
+    buzz(24);
   }
 
   progress(dt) {
-    const m = this.metres;
-    if (m > this.depth) {
-      // Points accrue per metre, multiplied by the chain — so flying close is
-      // not a side quest, it is the scoring system.
-      this.score += (m - this.depth) * 10 * this.mult;
-      this.shards += (m - this.depth) / 200;
-      this.depth = m;
-    }
+    this.shatter = Math.max(0.04, this.shatter - SPEED.fatigue * dt);
+    this.score += this.speed * dt * 0.1 * this.mult;
+    this.shards += (this.speed * dt) / 900;
 
-    const nextStone = (this.milestone + 1) * 1000;
-    if (m >= nextStone) {
+    const stone = (this.milestone + 1) * 10000;
+    if (this.dist >= stone) {
       this.milestone++;
       this.emit('milestone', this.milestone * 1000);
     }
 
-    const b = biomeAt(m);
-    if (b !== this.biome) {
-      this.biome = b;
-      this.emit('biome', b.name);
+    const z = zoneAt(this.dist);
+    if (z !== this.zone) {
+      this.zone = z;
+      this.emit('zone', z.name);
     }
 
-    if (!this.passedBest && m > this.bestKnown) {
+    if (!this.passedBest && this.dist > this.bestKnown) {
       this.passedBest = true;
       this.emit('best');
     }
@@ -445,113 +260,13 @@ export class Run {
     if (this.dead || this.god) return; // `god` is set only by tools/shots.mjs
     this.dead = true;
     this.deathT = 0;
-    this.deathCause = cause;
-    this.hook = 0;
-    this.anchor = null;
-    this.loop.freeze(0.11);
-    this.emit('death', cause);
-    buzz([30, 50, 90]);
+    this.deathCause = cause || 'shattered';
+    this.loop.freeze(0.12);
+    this.emit('death', this.deathCause);
+    buzz([30, 60, 100]);
   }
 
   killNow() {
     this.die('debug');
-  }
-
-  // ------------------------------------------------------- anchor targeting
-
-  /**
-   * Deterministic, visible auto-target. The player "aims" by parking their
-   * thumb on a side of the screen a beat early, which turns one button into
-   * route planning. Recomputed every frame and drawn before you ever touch, so
-   * the game never surprises you with the choice it made.
-   */
-  selectTarget(thumbX) {
-    if (this.hook !== 0 || this.dead) return;
-    let best = null;
-    let bestCost = Infinity;
-    const side = thumbX == null ? 0 : Math.sign(thumbX - VW / 2);
-
-    for (const chunk of this.world.live()) {
-      if (chunk.y1 < this.y - 700 || chunk.y0 > this.y + this.hookRange + 200) continue;
-      for (const a of chunk.anchors) {
-        const dx = a.x - this.x;
-        const dy = a.y - this.y;
-        const d = Math.hypot(dx, dy);
-        if (d > this.hookRange || d < 60) continue;
-        // What makes a good anchor is not just distance. It has to be AHEAD of
-        // the fall (so the rope loads instead of yanking you backwards) and
-        // laterally OFFSET (so the swing has an arc to develop). Measured, an
-        // anchor straight below gives ~40px of lateral movement per second —
-        // you fall past it and simply hang at bottom-dead-centre. One offset
-        // by a rope-length gives a real arc, which is the whole game.
-        const lateral = Math.abs(dx);
-        let cost = d;
-        if (dy < -260) cost += 900; // swinging back up is rarely what you want
-        else if (dy < 0) cost += 380; // level or behind: costs you your dive
-        else cost -= Math.min(dy, 380) * 0.5; // ahead of the fall: good
-        if (lateral < 120) cost += 700; // straight below: no arc, no steering
-        else cost -= Math.min(lateral, 420) * 0.9; // properly offset: best
-        if (side !== 0 && Math.sign(a.x - VW / 2) === side) cost -= 260;
-        if (a.risky) cost += 420; // anchors sitting inside a hazard's orbit
-        if (cost < bestCost) {
-          bestCost = cost;
-          best = a;
-        }
-      }
-    }
-    this.target = best;
-  }
-
-  /**
-   * Ten points of the swing you would get, by actually running the constrained
-   * simulation forward. Guessing at this with a circle arc lies whenever
-   * gravity matters, and a lying preview is worse than none.
-   */
-  predictArc() {
-    this.arc.length = 0;
-    const a = this.target;
-    if (!a || this.hook !== 0 || this.dead) return;
-
-    let x = this.x;
-    let y = this.y;
-    let vx = this.vx;
-    let vy = this.vy;
-    const L = clamp(Math.hypot(x - a.x, y - a.y), PHYS.ropeMin, PHYS.ropeMax);
-    const dt = 1 / 60;
-    for (let i = 0; i < 30; i++) {
-      vy += PHYS.gravity * dt;
-      const sp = Math.hypot(vx, vy);
-      if (sp > 0) {
-        const drag = this.dragHooked * sp * dt;
-        vx -= vx * drag;
-        vy -= vy * drag;
-      }
-      x += vx * dt;
-      y += vy * dt;
-      const dx = x - a.x;
-      const dy = y - a.y;
-      const d = Math.hypot(dx, dy);
-      if (d > L && d > 1e-6) {
-        const nx = dx / d;
-        const ny = dy / d;
-        x = a.x + nx * L;
-        y = a.y + ny * L;
-        const vn = vx * nx + vy * ny;
-        if (vn > 0) {
-          vx -= nx * vn;
-          vy -= ny * vn;
-        }
-      }
-      if (i % 3 === 0) this.arc.push(x, y);
-    }
-  }
-
-  updateTrail(dt) {
-    this.trailT += dt;
-    if (this.trailT < 0.012) return;
-    this.trailT = 0;
-    const want = 10 + Math.round(Math.min(12, this.combo * 0.6));
-    this.trail.unshift({ x: this.x, y: this.y });
-    while (this.trail.length > want) this.trail.pop();
   }
 }

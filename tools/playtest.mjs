@@ -173,7 +173,7 @@ async function main() {
   await tap(page, diveAt.x, diveAt.y);
   await page.waitForTimeout(400);
   let state = await page.evaluate(() => window.__GAME__?.state);
-  check('tap starts a dive', state === 'play', `state=${state}`);
+  check('tap starts a run', state === 'play', `state=${state}`);
 
   // -------------------------------------------------------- play a while
   // Drive it like a real thumb: alternating holds and taps across the screen.
@@ -185,7 +185,7 @@ async function main() {
   if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '02-play.png') });
 
   const mid = await page.evaluate(() => window.__GAME__?.debugSnapshot?.());
-  check('dive advances (time and depth move)', !!mid && mid.runTime > 1, JSON.stringify(mid || {}).slice(0, 160));
+  check('run advances (distance and speed move)', !!mid && mid.dist > 200, JSON.stringify(mid || {}).slice(0, 160));
 
   // ------------------------------------------------------- frame budget
   const perf = await page.evaluate(
@@ -219,11 +219,11 @@ async function main() {
     await new Promise((r) => setTimeout(r, 2200));
     return window.__GAME__?.state;
   });
-  check('dive can end and reach a result screen', ended === 'over' || ended === 'summary', `state=${ended}`);
+  check('run can end and reach a result screen', ended === 'over' || ended === 'summary', `state=${ended}`);
   if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '03-gameover.png') });
 
   const persisted = await page.evaluate(() => {
-    const raw = localStorage.getItem('hookfall.v1');
+    const raw = localStorage.getItem('redshift.v1');
     return raw ? JSON.parse(raw) : null;
   });
   check('progress persists to localStorage', !!persisted && persisted.runs >= 1, `runs=${persisted?.runs}`);

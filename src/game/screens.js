@@ -1,59 +1,63 @@
-// Every non-dive screen, drawn on the same canvas as the game.
+// Every non-run screen, drawn on the same canvas as the game.
 // Coordinates are the 720-wide virtual space; game.js scales it to the device.
 
-import { VW, UPGRADES, BIOMES, PX_PER_M } from './config.js';
-import { outlinedText, roundRect, polygon, withAlpha, clamp, ease } from '../core/draw.js';
+import { VW, UPGRADES, ZONES } from './config.js';
+import { outlinedText, roundRect, polygon, withAlpha, clamp } from '../core/draw.js';
 import { panel, meter } from '../core/widgets.js';
-import {
-  rank, RANKS, ensureMissions, upgradeTier, upgradeCost, todayKey,
-} from './meta.js';
+import { rank, RANKS, ensureMissions, upgradeTier, upgradeCost, todayKey } from './meta.js';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 const TAU = Math.PI * 2;
 
+// A slow idle version of the tube, so the menus sit inside the same world.
 function bg(ctx, view, t, pal) {
   const g = ctx.createLinearGradient(0, 0, 0, view.vh);
-  g.addColorStop(0, pal.bgTop);
-  g.addColorStop(1, pal.bgBottom);
+  g.addColorStop(0, pal.fog);
+  g.addColorStop(0.45, pal.wall);
+  g.addColorStop(1, pal.fog);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, VW, view.vh);
 
-  // A slow drift of the same rock silhouettes, so the menu feels like it is
-  // hanging in the same shaft you are about to dive.
+  const cx = VW / 2;
+  const cy = view.vh * 0.44;
   ctx.save();
   ctx.globalAlpha = 0.5;
-  ctx.fillStyle = pal.rock;
-  const scroll = (t * 26) % 300;
-  for (let i = -1; i < view.vh / 300 + 2; i++) {
-    const y = i * 300 + scroll;
-    const w = 90 + Math.sin(i * 2.3) * 55;
+  for (let i = 0; i < 14; i++) {
+    // Rings marching outward from the vanishing point.
+    const k = ((i / 14) + (t * 0.09) % (1 / 14) * 14) % 1;
+    const s = Math.pow(k, 2.2) * 3.2;
+    const r = 40 + s * 520;
+    ctx.strokeStyle = withAlpha(pal.edge, 0.30 * (1 - k));
+    ctx.lineWidth = 1 + (1 - k) * 2;
     ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(w, y + 150);
-    ctx.lineTo(0, y + 300);
+    for (let j = 0; j <= 8; j++) {
+      const a = (j / 8) * TAU + t * 0.05;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      if (j === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
     ctx.closePath();
-    ctx.fill();
-    const w2 = 90 + Math.cos(i * 1.7) * 55;
-    ctx.beginPath();
-    ctx.moveTo(VW, y + 60);
-    ctx.lineTo(VW - w2, y + 210);
-    ctx.lineTo(VW, y + 360);
-    ctx.closePath();
-    ctx.fill();
+    ctx.stroke();
   }
+  const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, 220);
+  gr.addColorStop(0, withAlpha(pal.edge, 0.30));
+  gr.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gr;
+  ctx.fillRect(0, 0, VW, view.vh);
   ctx.restore();
 }
 
 function sigil(ctx, x, y, r, tier, t, color) {
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(t * 0.35);
+  ctx.rotate(t * 0.3);
   ctx.strokeStyle = color;
   ctx.lineWidth = 3;
-  polygon(ctx, 0, 0, r, 6, 0);
+  polygon(ctx, 0, 0, r, 8, 0);
   ctx.stroke();
   ctx.globalAlpha = 0.45;
-  polygon(ctx, 0, 0, r * 0.68, 6, Math.PI / 6);
+  polygon(ctx, 0, 0, r * 0.66, 8, Math.PI / 8);
   ctx.stroke();
   ctx.globalAlpha = 1;
   for (let i = 0; i <= tier; i++) {
@@ -84,41 +88,37 @@ export function drawTitle(ctx, g, view, dt) {
   const r = rank(save.best);
   const tier = Math.max(0, RANKS.indexOf(r));
 
-  sigil(ctx, VW / 2, top + 96, 46, tier, t, pal.accent);
-  // Rank names are words, not letters — they go under the sigil, not inside it.
-  outlinedText(ctx, r.name, VW / 2, top + 162, {
+  sigil(ctx, VW / 2, top + 96, 46, tier, t, pal.edge);
+  outlinedText(ctx, r.name, VW / 2, top + 160, {
     size: 20, weight: 900, color: '#FFD34F', outlineWidth: 3, font: FONT,
   });
-  outlinedText(ctx, 'HOOKFALL', VW / 2, top + 222, {
-    size: 78, weight: 900, color: '#FFFFFF', outlineWidth: 6, font: FONT,
+  outlinedText(ctx, 'REDSHIFT', VW / 2, top + 222, {
+    size: 76, weight: 900, color: '#FFFFFF', outlineWidth: 6, font: FONT,
   });
-  outlinedText(ctx, 'KNOW WHEN TO LET GO', VW / 2, top + 264, {
-    size: 19, weight: 700, color: withAlpha('#FFFFFF', 0.45), outlineWidth: 3, font: FONT,
+  outlinedText(ctx, 'THE FASTER YOU GO, THE MORE IT LIES', VW / 2, top + 262, {
+    size: 18, weight: 700, color: withAlpha('#FFFFFF', 0.45), outlineWidth: 3, font: FONT,
   });
-
-  outlinedText(ctx, `BEST  ${Math.round(save.best || 0).toLocaleString()} m`, VW / 2, top + 312, {
+  outlinedText(ctx, `BEST  ${Math.round(save.best || 0).toLocaleString()}`, VW / 2, top + 310, {
     size: 30, weight: 800, color: '#FFD34F', outlineWidth: 4, font: FONT,
   });
   shardChip(ctx, save, VW - 24, top + 30);
 
-  // Deepest biome reached — the "I've never seen BLACK GLASS" hook.
-  let y = top + 348;
-  const reached = BIOMES.filter((b) => (save.best || 0) >= b.at);
-  const nextB = BIOMES[reached.length];
-  if (nextB) {
+  let y = top + 346;
+  const reached = ZONES.filter((z) => (save.best || 0) >= z.at);
+  const next = ZONES[reached.length];
+  if (next) {
     const prev = reached[reached.length - 1];
-    outlinedText(ctx, `NEXT: ${nextB.name} AT ${nextB.at.toLocaleString()} m`, VW / 2, y, {
+    outlinedText(ctx, `NEXT: ${next.name} AT ${next.at.toLocaleString()}`, VW / 2, y, {
       size: 17, weight: 700, color: withAlpha('#FFFFFF', 0.5), outlineWidth: 2, font: FONT,
     });
-    meter(ctx, 120, y + 16, VW - 240, 7, ((save.best || 0) - prev.at) / (nextB.at - prev.at), { fg: nextB.accent });
+    meter(ctx, 120, y + 16, VW - 240, 7, ((save.best || 0) - prev.at) / (next.at - prev.at), { fg: next.edge });
   } else {
-    outlinedText(ctx, 'EVERY BIOME REACHED', VW / 2, y, {
+    outlinedText(ctx, 'EVERY ZONE REACHED', VW / 2, y, {
       size: 17, weight: 700, color: '#FFD34F', outlineWidth: 2, font: FONT,
     });
   }
   y += 52;
 
-  // ---- missions
   const missions = ensureMissions(save);
   outlinedText(ctx, 'MISSIONS', 28, y, {
     size: 18, weight: 800, color: withAlpha('#FFFFFF', 0.45), align: 'left', outlineWidth: 2, font: FONT,
@@ -134,20 +134,19 @@ export function drawTitle(ctx, g, view, dt) {
       size: 17, weight: 700, color: m.done ? '#FFD34F' : withAlpha('#FFFFFF', 0.6),
       align: 'left', outlineWidth: 0, font: FONT,
     });
-    if (!m.done && m.prog > 0) meter(ctx, VW - 160, y + 15, 110, 6, m.prog / m.goal, { fg: pal.accent });
+    if (!m.done && m.prog > 0) meter(ctx, VW - 160, y + 15, 110, 6, m.prog / m.goal, { fg: pal.edge });
     ctx.restore();
     y += 44;
   }
 
   const playY = bottom - 76 - 16 - 104;
 
-  // ---- lifetime stats
-  if (playY - y > 160) {
+  if (playY - y > 170) {
     y += 16;
     const stats = [
-      ['DIVES', String(save.runs || 0)],
-      ['GEMS', String(save.gems || 0)],
-      ['TOTAL', `${Math.round((save.totalDepth || 0) / 1000)}k m`],
+      ['RUNS', String(save.runs || 0)],
+      ['TOP SPEED', String(Math.round(save.bestSpeed || 0))],
+      ['TOTAL', `${Math.round((save.totalDist || 0) / 1000)}k`],
     ];
     const sw = (VW - 56 - 24) / 3;
     stats.forEach((st, i) => {
@@ -155,27 +154,22 @@ export function drawTitle(ctx, g, view, dt) {
       roundRect(ctx, x, y, sw, 72, 12);
       ctx.fillStyle = 'rgba(255,255,255,0.05)';
       ctx.fill();
-      outlinedText(ctx, st[1], x + sw / 2, y + 28, {
-        size: 28, weight: 900, color: '#FFFFFF', outlineWidth: 0, font: FONT,
-      });
-      outlinedText(ctx, st[0], x + sw / 2, y + 54, {
-        size: 13, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 0, font: FONT,
-      });
+      outlinedText(ctx, st[1], x + sw / 2, y + 28, { size: 26, weight: 900, color: '#FFFFFF', outlineWidth: 0, font: FONT });
+      outlinedText(ctx, st[0], x + sw / 2, y + 54, { size: 12, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 0, font: FONT });
     });
     y += 88;
   }
 
-  // ---- depth history, expanded to absorb whatever height is left
-  const hist = save.depths20 || [];
+  const hist = save.dists20 || [];
   if (hist.length > 1 && playY - y > 90) {
     y += 12;
-    outlinedText(ctx, 'LAST 20 DIVES', 28, y, {
+    outlinedText(ctx, 'LAST 20 RUNS', 28, y, {
       size: 15, weight: 700, color: withAlpha('#FFFFFF', 0.35), align: 'left', outlineWidth: 0, font: FONT,
     });
     const h = clamp(playY - y - 44, 60, 300);
     const maxD = Math.max(...hist, 1);
     ctx.save();
-    ctx.strokeStyle = withAlpha(pal.accent, 0.85);
+    ctx.strokeStyle = withAlpha(pal.edge, 0.85);
     ctx.lineWidth = 3;
     ctx.lineJoin = 'round';
     ctx.beginPath();
@@ -189,25 +183,24 @@ export function drawTitle(ctx, g, view, dt) {
     ctx.restore();
   }
 
-  // ---- actions
-  if (ui.button(ctx, input, dt, 'play', 32, playY, VW - 64, 104, 'DIVE', {
-    textSize: 46, stroke: pal.accent, fill: '#141d3a', fillActive: '#22336b', glow: 22, radius: 26,
+  if (ui.button(ctx, input, dt, 'play', 32, playY, VW - 64, 104, 'GO', {
+    textSize: 48, stroke: pal.edge, fill: '#141d3a', fillActive: '#22336b', glow: 22, radius: 26,
   })) {
     g.beginRun({ daily: false });
   }
 
   const bw = (VW - 64 - 24) / 3;
-  const dailyDone = save.daily?.date === todayKey() && save.daily?.locked;
-  if (ui.button(ctx, input, dt, 'daily', 32, bottom - 76, bw, 60, dailyDone ? 'DAILY ✓' : 'DAILY', {
-    textSize: 20, sub: dailyDone ? `${Math.round(save.daily.depth)} m · ${save.daily.streak}d` : 'ONE SEED',
-    stroke: dailyDone ? '#FFD34F' : '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
+  const done = save.daily?.date === todayKey() && save.daily?.locked;
+  if (ui.button(ctx, input, dt, 'daily', 32, bottom - 76, bw, 60, done ? 'DAILY ✓' : 'DAILY', {
+    textSize: 20, sub: done ? `${Math.round(save.daily.dist)} · ${save.daily.streak}d` : 'ONE SEED',
+    stroke: done ? '#FFD34F' : '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
   })) {
     g.beginRun({ daily: true });
   }
-  if (ui.button(ctx, input, dt, 'hook', 32 + bw + 12, bottom - 76, bw, 60, 'HOOK', {
+  if (ui.button(ctx, input, dt, 'ship', 32 + bw + 12, bottom - 76, bw, 60, 'SHIP', {
     textSize: 20, sub: 'UPGRADES', stroke: '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
   })) {
-    g.screen = 'hook';
+    g.screen = 'ship';
     g.sfxConfirm();
   }
   if (ui.button(ctx, input, dt, 'settings', 32 + (bw + 12) * 2, bottom - 76, bw, 60, 'SETTINGS', {
@@ -218,19 +211,19 @@ export function drawTitle(ctx, g, view, dt) {
   }
 }
 
-// -------------------------------------------------------------- hook shop
+// -------------------------------------------------------------- ship shop
 
-export function drawHook(ctx, g, view, dt) {
+export function drawShip(ctx, g, view, dt) {
   const { ui, input, save, t } = g;
   const pal = g.renderer.palette(0);
   bg(ctx, view, t, pal);
   const top = view.insetTop;
   const bottom = view.vh - view.insetBottom;
 
-  outlinedText(ctx, 'THE HOOK', VW / 2, top + 54, {
+  outlinedText(ctx, 'THE SHIP', VW / 2, top + 54, {
     size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT,
   });
-  outlinedText(ctx, 'UPGRADES CHANGE YOUR STYLE, NOT YOUR CEILING', VW / 2, top + 90, {
+  outlinedText(ctx, 'LENS TRADES SPECTACLE FOR READABILITY', VW / 2, top + 90, {
     size: 15, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 2, font: FONT,
   });
   shardChip(ctx, save, VW - 24, top + 30);
@@ -245,41 +238,30 @@ export function drawHook(ctx, g, view, dt) {
     roundRect(ctx, 28, y, VW - 56, 108, 16);
     ctx.fillStyle = 'rgba(255,255,255,0.05)';
     ctx.fill();
+    outlinedText(ctx, u.name, 48, y + 30, { size: 26, weight: 900, color: '#FFFFFF', align: 'left', outlineWidth: 0, font: FONT });
+    outlinedText(ctx, u.blurb, 48, y + 56, { size: 16, weight: 700, color: withAlpha('#FFFFFF', 0.45), align: 'left', outlineWidth: 0, font: FONT });
+    outlinedText(ctx, u.unit(tier), 48, y + 84, { size: 19, weight: 800, color: pal.edge, align: 'left', outlineWidth: 0, font: FONT });
 
-    outlinedText(ctx, u.name, 48, y + 30, {
-      size: 26, weight: 900, color: '#FFFFFF', align: 'left', outlineWidth: 0, font: FONT,
-    });
-    outlinedText(ctx, u.blurb, 48, y + 56, {
-      size: 16, weight: 700, color: withAlpha('#FFFFFF', 0.45), align: 'left', outlineWidth: 0, font: FONT,
-    });
-    outlinedText(ctx, u.unit(tier), 48, y + 84, {
-      size: 20, weight: 800, color: pal.accent, align: 'left', outlineWidth: 0, font: FONT,
-    });
-
-    // Tier pips.
     for (let i = 0; i < 5; i++) {
-      const px = 300 + i * 26;
+      const px = 320 + i * 26;
       roundRect(ctx, px, y + 74, 18, 14, 4);
-      ctx.fillStyle = i < tier ? pal.accent : 'rgba(255,255,255,0.14)';
+      ctx.fillStyle = i < tier ? pal.edge : 'rgba(255,255,255,0.14)';
       ctx.fill();
     }
 
-    if (ui.button(ctx, input, dt, `buy${u.id}`, VW - 214, y + 22, 166, 64,
-      maxed ? 'MAX' : `◆ ${cost}`, {
-        textSize: 24,
-        stroke: maxed ? '#4a4570' : afford ? '#FFD34F' : '#4a4570',
-        fill: afford ? '#3a2f10' : '#12142a',
-        disabled: maxed || !afford,
-        radius: 14,
-        pitch: 64,
-      })) {
+    if (ui.button(ctx, input, dt, `buy${u.id}`, VW - 214, y + 22, 166, 64, maxed ? 'MAX' : `◆ ${cost}`, {
+      textSize: 24,
+      stroke: maxed ? '#4a4570' : afford ? '#FFD34F' : '#4a4570',
+      fill: afford ? '#3a2f10' : '#12142a',
+      disabled: maxed || !afford, radius: 14, pitch: 64,
+    })) {
       if (g.buy(u.id)) g.sfxConfirm();
     }
     y += 120;
   }
 
-  if (ui.button(ctx, input, dt, 'hookback', 32, bottom - 84, VW - 64, 72, 'BACK', {
-    textSize: 30, stroke: pal.accent, fill: '#141d3a', radius: 18,
+  if (ui.button(ctx, input, dt, 'shipback', 32, bottom - 84, VW - 64, 72, 'BACK', {
+    textSize: 30, stroke: pal.edge, fill: '#141d3a', radius: 18,
   })) {
     g.screen = 'title';
     g.sfxBack();
@@ -300,7 +282,7 @@ export function drawSettings(ctx, g, view, dt) {
   });
 
   let y = top + 110;
-  const row = 92; // >= MIN_TOUCH so adjacent hit rects can never overlap
+  const row = 92; // >= MIN_TOUCH, so adjacent hit rects can never overlap
   const W = VW - 56;
   const s = save.settings;
 
@@ -329,16 +311,14 @@ export function drawSettings(ctx, g, view, dt) {
   }
   y += row + 20;
 
-  outlinedText(ctx, `${save.runs || 0} DIVES · ${Math.round(save.totalDepth || 0).toLocaleString()} m TOTAL`, VW / 2, y, {
+  outlinedText(ctx, `${save.runs || 0} RUNS · ${Math.round(save.totalDist || 0).toLocaleString()} TOTAL`, VW / 2, y, {
     size: 18, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 2, font: FONT,
   });
 
   if (g.confirmReset) {
     if (ui.button(ctx, input, dt, 'reset2', 28, bottom - 176, W, 72, 'ERASE EVERYTHING?', {
       textSize: 26, stroke: '#ff2020', fill: '#3a0e14', radius: 18, pitch: 84,
-    })) {
-      g.wipeSave();
-    }
+    })) g.wipeSave();
   } else if (ui.button(ctx, input, dt, 'reset', 28, bottom - 176, W, 72, 'RESET PROGRESS', {
     textSize: 22, stroke: '#6a3050', fill: '#1a0f1e', radius: 18, pitch: 84,
   })) {
@@ -346,7 +326,7 @@ export function drawSettings(ctx, g, view, dt) {
   }
 
   if (ui.button(ctx, input, dt, 'back', 28, bottom - 84, W, 72, 'BACK', {
-    textSize: 30, stroke: pal.accent, fill: '#141d3a', radius: 18, pitch: 84,
+    textSize: 30, stroke: pal.edge, fill: '#141d3a', radius: 18, pitch: 84,
   })) {
     g.confirmReset = false;
     g.screen = 'title';
@@ -358,49 +338,42 @@ export function drawSettings(ctx, g, view, dt) {
 
 export function drawResults(ctx, g, view, dt) {
   const { ui, input, save, t, run } = g;
-  const pal = g.renderer.palette(run.depth);
+  const pal = g.renderer.palette(run.dist);
   const top = view.insetTop;
   const bottom = view.vh - view.insetBottom;
   const res = g.result;
 
   ctx.save();
-  ctx.fillStyle = 'rgba(4,4,12,0.88)';
+  ctx.fillStyle = 'rgba(3,4,10,0.88)';
   ctx.fillRect(0, 0, VW, view.vh);
   ctx.restore();
 
-  const isBest = res.newBest;
-  outlinedText(ctx, isBest ? 'DEEPEST YET' : run.deathCause === 'collapse' ? 'THE COLLAPSE TOOK YOU' : 'YOU HIT SOMETHING',
-    VW / 2, top + 52, {
-      size: 24, weight: 800, color: isBest ? '#FFD34F' : withAlpha('#FFFFFF', 0.5), outlineWidth: 3, font: FONT,
-    });
-  outlinedText(ctx, `${Math.round(g.countUp).toLocaleString()}`, VW / 2, top + 132, {
-    size: 92, weight: 900, color: isBest ? '#FFD34F' : '#FFFFFF', outlineWidth: 7, font: FONT,
+  outlinedText(ctx, res.newBest ? 'FURTHEST YET' : 'HULL SHATTERED', VW / 2, top + 52, {
+    size: 24, weight: 800, color: res.newBest ? '#FFD34F' : withAlpha('#FFFFFF', 0.5), outlineWidth: 3, font: FONT,
   });
-  outlinedText(ctx, 'METRES', VW / 2, top + 180, {
-    size: 20, weight: 800, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 3, font: FONT,
+  outlinedText(ctx, Math.round(g.countUp).toLocaleString(), VW / 2, top + 130, {
+    size: 88, weight: 900, color: res.newBest ? '#FFD34F' : '#FFFFFF', outlineWidth: 7, font: FONT,
   });
-  outlinedText(ctx, `BEST ${Math.round(save.best || 0).toLocaleString()} m`, VW / 2, top + 212, {
+  outlinedText(ctx, `BEST ${Math.round(save.best || 0).toLocaleString()}`, VW / 2, top + 178, {
     size: 20, weight: 700, color: withAlpha('#FFFFFF', 0.45), outlineWidth: 2, font: FONT,
   });
 
-  // The coaching line.
   ctx.save();
-  roundRect(ctx, 28, top + 240, VW - 56, 62, 16);
-  ctx.fillStyle = withAlpha(pal.accent, 0.10);
+  roundRect(ctx, 28, top + 206, VW - 56, 62, 16);
+  ctx.fillStyle = withAlpha(pal.edge, 0.10);
   ctx.fill();
-  outlinedText(ctx, g.coach, VW / 2, top + 271, {
-    size: g.coach.length > 42 ? 18 : 21, weight: 800, color: pal.accent, outlineWidth: 0, font: FONT,
+  outlinedText(ctx, g.coach, VW / 2, top + 237, {
+    size: g.coach.length > 42 ? 18 : 21, weight: 800, color: pal.edge, outlineWidth: 0, font: FONT,
   });
   ctx.restore();
 
-  // Stats.
-  let y = top + 322;
+  let y = top + 288;
   const stats = [
-    ['SCORE', Math.round(run.score).toLocaleString()],
+    ['TOP SPEED', String(Math.round(run.topSpeed))],
     ['BEST CHAIN', String(run.bestCombo)],
-    ['WHIPCRACKS', String(run.whipcracks)],
-    ['GEMS', String(run.gems)],
-    ['TOP SPEED', `${Math.round(run.topSpeed)}`],
+    ['GRAZES', String(run.grazes)],
+    ['GATES', String(run.gates)],
+    ['CLIPS', String(run.clips)],
     ['SHARDS', `◆ ${res.shardsEarned}`],
   ];
   stats.forEach((st, i) => {
@@ -428,8 +401,8 @@ export function drawResults(ctx, g, view, dt) {
     y += 30;
   }
 
-  if (ui.button(ctx, input, dt, 'again', 32, againY, VW - 64, 100, 'DIVE AGAIN', {
-    textSize: 40, stroke: pal.accent, fill: '#141d3a', fillActive: '#22336b', glow: 22, radius: 24,
+  if (ui.button(ctx, input, dt, 'again', 32, againY, VW - 64, 100, 'AGAIN', {
+    textSize: 40, stroke: pal.edge, fill: '#141d3a', fillActive: '#22336b', glow: 22, radius: 24,
   })) {
     g.beginRun({ daily: g.isDaily });
   }
@@ -445,34 +418,29 @@ export function drawResults(ctx, g, view, dt) {
 
 export function drawPause(ctx, g, view, dt) {
   const { ui, input } = g;
-  const pal = g.renderer.palette(g.run ? g.run.depth : 0);
+  const pal = g.renderer.palette(g.run ? g.run.dist : 0);
   ctx.save();
-  ctx.fillStyle = 'rgba(4,4,12,0.82)';
+  ctx.fillStyle = 'rgba(3,4,10,0.82)';
   ctx.fillRect(0, 0, VW, view.vh);
   ctx.restore();
 
   const cy = view.vh / 2;
   panel(ctx, 60, cy - 220, VW - 120, 440, { blurGlow: 24, radius: 28 });
-  outlinedText(ctx, 'PAUSED', VW / 2, cy - 156, {
-    size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT,
-  });
+  outlinedText(ctx, 'PAUSED', VW / 2, cy - 156, { size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT });
 
   if (ui.button(ctx, input, dt, 'resume', 92, cy - 100, VW - 184, 92, 'RESUME', {
-    textSize: 32, stroke: pal.accent, fill: '#141d3a', radius: 20, pitch: 104,
-  })) {
-    g.resume();
-  }
+    textSize: 32, stroke: pal.edge, fill: '#141d3a', radius: 20, pitch: 104,
+  })) g.resume();
+
   if (ui.button(ctx, input, dt, 'restart', 92, cy + 4, VW - 184, 80, 'RESTART', {
     textSize: 26, stroke: '#6a6aa0', fill: '#12142a', radius: 18, pitch: 92,
   })) {
-    // Bank the dive first — restarting must never be the one path that
-    // silently throws a record away.
+    // Bank the run first: restarting must never be the one path that throws a
+    // record away.
     g.finishRun();
     g.beginRun({ daily: g.isDaily });
   }
   if (ui.button(ctx, input, dt, 'quit', 92, cy + 96, VW - 184, 80, 'QUIT TO MENU', {
     textSize: 26, stroke: '#4a4570', fill: '#101024', radius: 18, pitch: 92,
-  })) {
-    g.endRunEarly();
-  }
+  })) g.endRunEarly();
 }

@@ -3,7 +3,7 @@
    refreshing) in the middle of a game. */
 
 :root {
-  --ink: #0b1020;
+  --ink: #050912;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
@@ -62,7 +62,7 @@ body {
   place-content: center;
   justify-items: center;
   gap: 22px;
-  background: radial-gradient(circle at 50% 42%, #16203a 0%, #0b1020 62%);
+  background: radial-gradient(circle at 50% 44%, #1b3a6b 0%, #050912 62%);
   z-index: 10;
   transition: opacity 320ms ease;
 }

@@ -1,18 +1,18 @@
 {
-  "name": "Hookfall",
-  "short_name": "Hookfall",
-  "description": "Dive a collapsing chasm on a grappling hook. Hold to swing, release to fly. Fully offline, installable, no ads.",
+  "name": "Redshift",
+  "short_name": "Redshift",
+  "description": "A warp tunnel where your speed distorts the view. The faster you go, the more the picture lies.",
   "start_url": "./index.html",
   "scope": "./",
-  "id": "hookfall",
+  "id": "redshift",
   "display": "fullscreen",
   "display_override": [
     "fullscreen",
     "standalone"
   ],
   "orientation": "portrait",
-  "background_color": "#0b1020",
-  "theme_color": "#0b1020",
+  "background_color": "#050912",
+  "theme_color": "#050912",
   "categories": [
     "games",
     "entertainment"

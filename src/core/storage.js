@@ -2,13 +2,13 @@
 // cookies) so every access is guarded and the game degrades to in-memory —
 // you can still play, the numbers just don't survive a reload.
 
-const KEY = 'hookfall.v1';
+const KEY = 'redshift.v1';
 
 const memory = new Map();
 
 const backend = (() => {
   try {
-    const probe = '__hookfall_probe__';
+    const probe = '__redshift_probe__';
     localStorage.setItem(probe, '1');
     localStorage.removeItem(probe);
     return localStorage;
@@ -24,18 +24,18 @@ const backend = (() => {
 export function defaults() {
   return {
     v: 1,
-    best: 0,           // deepest dive, in metres — the headline record
+    best: 0,           // furthest distance — the headline record
     bestScore: 0,
     bestCombo: 0,
+    bestSpeed: 0,
     runs: 0,
-    totalDepth: 0,
-    gems: 0,
+    totalDist: 0,
     shards: 0,
-    upgrades: { reach: 0, snap: 0, winch: 0, wax: 0 },
-    depths20: [],
+    upgrades: { grip: 0, lens: 0, intake: 0, hull: 0 },
+    dists20: [],
     missions: null,
     missionSets: 0,
-    daily: { date: null, depth: 0, score: 0, streak: 0, locked: false, history: [] },
+    daily: { date: null, dist: 0, score: 0, streak: 0, locked: false, history: [] },
     settings: {
       sound: true,
       music: true,

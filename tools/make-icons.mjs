@@ -1,7 +1,7 @@
 // Generates the PWA icon set.
 //
 // The game draws all of its art procedurally, and so do its icons: this script
-// renders the same hook-and-rope mark on a Canvas in headless Chromium and writes
+// renders the same tunnel mark on a Canvas in headless Chromium and writes
 // real PNGs. That keeps the repo free of binary art nobody can edit, while
 // still giving Android and iOS the raster files their installers require.
 //
@@ -34,9 +34,9 @@ function drawIcon(size, inset, bleed) {
   const x = c.getContext('2d');
   const S = size;
 
-  const bg = x.createLinearGradient(0, 0, 0, S);
-  bg.addColorStop(0, '#16203a');
-  bg.addColorStop(1, '#080c18');
+  const bg = x.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S * 0.7);
+  bg.addColorStop(0, '#12305c');
+  bg.addColorStop(1, '#04060e');
   if (bleed) {
     x.fillStyle = bg;
     x.fillRect(0, 0, S, S);
@@ -61,63 +61,45 @@ function drawIcon(size, inset, bleed) {
   const cx = S / 2;
   const cy = S / 2;
 
-  // The shaft: two jagged walls closing toward the bottom.
+  // Receding octagonal rings: the tunnel, in one glance.
   x.save();
   x.translate(cx, cy);
-  x.fillStyle = '#04060e';
-  const gap = k * 0.30;
+  for (let i = 4; i >= 0; i--) {
+    const f = Math.pow((i + 1) / 5, 1.9);
+    const rr = k * 0.52 * f;
+    x.strokeStyle = `rgba(87,224,255,${(0.25 + (1 - f) * 0.75).toFixed(3)})`;
+    x.lineWidth = Math.max(1.5, S * 0.020 * (1 - f * 0.5));
+    x.beginPath();
+    for (let j = 0; j <= 8; j++) {
+      const a = (j / 8) * Math.PI * 2 + Math.PI / 8;
+      const px = Math.cos(a) * rr;
+      const py = Math.sin(a) * rr;
+      if (j === 0) x.moveTo(px, py);
+      else x.lineTo(px, py);
+    }
+    x.closePath();
+    x.stroke();
+  }
+
+  // The blocked sector — the thing you have to roll away from.
+  x.fillStyle = 'rgba(255,59,107,0.92)';
   x.beginPath();
-  x.moveTo(-S, -S);
-  x.lineTo(-gap * 1.15, -k * 0.5);
-  x.lineTo(-gap * 0.72, 0);
-  x.lineTo(-gap * 1.0, k * 0.5);
-  x.lineTo(-S, S);
+  const a0 = -Math.PI / 2 - 0.42;
+  const a1 = -Math.PI / 2 + 0.42;
+  x.arc(0, 0, k * 0.52, a0, a1);
+  x.arc(0, 0, k * 0.24, a1, a0, true);
   x.closePath();
   x.fill();
-  x.beginPath();
-  x.moveTo(S, -S);
-  x.lineTo(gap * 1.0, -k * 0.5);
-  x.lineTo(gap * 0.70, 0);
-  x.lineTo(gap * 1.15, k * 0.5);
-  x.lineTo(S, S);
-  x.closePath();
-  x.fill();
 
-  // Anchor ring, rope, and the diver mid-swing — the whole game in one shape.
-  const ax = -gap * 0.55;
-  const ay = -k * 0.30;
-  const dx = gap * 0.42;
-  const dy = k * 0.24;
-
-  x.strokeStyle = '#57e0ff';
-  x.lineWidth = Math.max(2, S * 0.030);
-  x.lineCap = 'round';
-  x.globalAlpha = 0.28;
-  x.lineWidth = Math.max(4, S * 0.075);
-  x.beginPath();
-  x.moveTo(ax, ay);
-  x.lineTo(dx, dy);
-  x.stroke();
-  x.globalAlpha = 1;
-  x.lineWidth = Math.max(2, S * 0.028);
-  x.beginPath();
-  x.moveTo(ax, ay);
-  x.lineTo(dx, dy);
-  x.stroke();
-
-  x.lineWidth = Math.max(2, S * 0.036);
-  x.beginPath();
-  x.arc(ax, ay, k * 0.10, 0, Math.PI * 2);
-  x.stroke();
-
-  x.save();
-  x.translate(dx, dy);
-  x.rotate(Math.atan2(dy - ay, dx - ax) + Math.PI / 2);
+  // The ship, at the bottom of the bore.
   x.fillStyle = '#ffffff';
   x.beginPath();
-  x.ellipse(0, 0, k * 0.055, k * 0.11, 0, 0, Math.PI * 2);
+  x.moveTo(0, k * 0.30);
+  x.lineTo(k * 0.10, k * 0.47);
+  x.lineTo(0, k * 0.41);
+  x.lineTo(-k * 0.10, k * 0.47);
+  x.closePath();
   x.fill();
-  x.restore();
   x.restore();
 
   return c.toDataURL('image/png');
