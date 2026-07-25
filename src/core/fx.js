@@ -36,8 +36,12 @@ class Pool {
 }
 
 export class Fx {
-  constructor({ reduceMotion = false } = {}) {
+  constructor({ reduceMotion = false, shakeScale = 1 } = {}) {
     this.reduceMotion = reduceMotion;
+    // The single owner of the shake accessibility scalar. It used to be
+    // applied here AND at every call site, so "MINIMAL" (0.25) came out at
+    // 0.0625 — indistinguishable from off.
+    this.shakeScale = shakeScale;
 
     this.particles = new Pool(
       () => ({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 2, color: '#fff', drag: 0.98, gravity: 0, shape: 0, spin: 0, rot: 0, glow: 0 }),
@@ -77,7 +81,7 @@ export class Fx {
   // ------------------------------------------------------------- spawners
 
   shake(amp, decay = 6) {
-    if (this.reduceMotion) amp *= 0.25;
+    amp *= this.shakeScale;
     this.shakeAmp = Math.max(this.shakeAmp, amp);
     this.shakeDecay = decay;
   }

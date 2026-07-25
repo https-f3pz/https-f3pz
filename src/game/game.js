@@ -106,8 +106,10 @@ export class Game {
     const s = this.save.settings;
     setHaptics(!!s.haptics);
     audio.configure({ sound: !!s.sound, music: !!s.music });
-    this.fx.reduceMotion = s.reduceShake <= 0.25;
-    this.shakeScale = s.reduceShake ?? 1;
+    // reduceMotion thins particle counts; shakeScale owns camera shake. They
+    // are separate knobs and must not be multiplied together.
+    this.fx.reduceMotion = !!s.reduceGlow;
+    this.fx.shakeScale = s.reduceShake ?? 1;
     this.opt = {
       highContrast: !!s.highContrast,
       reduceGlow: !!s.reduceGlow,
@@ -313,10 +315,46 @@ export class Game {
 
   // --------------------------------------------------------------- update
 
+  // Once per rendered frame, before any substep. Everything discrete — taps,
+  // releases, vents, pause — is handled here exactly once, because the number
+  // of substeps in a frame varies from zero to eight.
+  beginFrame() {
+    this.syncInput();
+    if (this.screen === 'play' && this.run && !this.run.dead) this.handleFrameInput();
+  }
+
+  handleFrameInput() {
+    const run = this.run;
+
+    // Pause button, top-left, outside the play column.
+    const pb = { x: 2, y: this.view.insetTop - 2, w: 34, h: 34 };
+    for (const t of this.input.taps) {
+      if (t.x >= pb.x && t.x <= pb.x + pb.w && t.y >= pb.y && t.y <= pb.y + pb.h) {
+        this.pause();
+        return;
+      }
+    }
+
+    if (this.save.settings.ventMode === 'secondTap') {
+      // A second finger vents; the steering finger is never disturbed.
+      for (const p of this.input.presses) {
+        if (p.count >= 2) run.requestVent();
+      }
+    } else {
+      for (const r of this.input.releases) {
+        if (!r.wasPrimary) continue;
+        // Guard rails so an accidental lift never costs a run: it must have
+        // been a deliberate hold, and it must not follow a pointercancel.
+        if (r.duration < 150) continue;
+        if (this.rawInput.cancelledRecently(200)) continue;
+        run.requestVent();
+      }
+    }
+  }
+
   update(dt) {
     this.t += dt;
     this.renderer.t = this.t;
-    this.syncInput();
 
     if (this.screen === 'play') this.updatePlay(dt);
     else if (this.screen === 'results') this.updateResults(dt);
@@ -365,35 +403,11 @@ export class Game {
       return;
     }
 
-    // -------- pause button (top-left, outside the play column)
-    const pb = { x: 2, y: this.view.insetTop - 2, w: 34, h: 34 };
-    for (const t of this.input.taps) {
-      if (t.x >= pb.x && t.x <= pb.x + pb.w && t.y >= pb.y && t.y <= pb.y + pb.h) {
-        this.pause();
-        return;
-      }
-    }
-
-    // -------- steering + vent
+    // -------- steering (continuous; the discrete events were latched in
+    // beginFrame, which runs exactly once per frame)
     const steerId = this.input.primary;
     const touch = steerId != null ? this.input.pointers.get(steerId) : null;
     const mode = this.save.settings.ventMode;
-
-    if (mode === 'secondTap') {
-      // A second finger vents; the steering finger is never disturbed.
-      for (const p of this.input.presses) {
-        if (p.count >= 2) run.requestVent();
-      }
-    } else {
-      for (const r of this.input.releases) {
-        if (!r.wasPrimary) continue;
-        // Guard rails so an accidental lift never costs a run: it must have
-        // been a deliberate hold, and it must not follow a cancel.
-        if (r.duration < 150) continue;
-        if (this.rawInput.cancelledRecently(200)) continue;
-        run.requestVent();
-      }
-    }
 
     // A vent's invulnerability extends while the finger is off the glass, so
     // "I lifted by mistake" can never be lethal.
@@ -437,7 +451,6 @@ export class Game {
   handleEvents() {
     const run = this.run;
     const fx = this.fx;
-    const sh = this.shakeScale ?? 1;
 
     for (const ev of run.events) {
       switch (ev.type) {
@@ -471,7 +484,7 @@ export class Game {
 
         case 'vent': {
           audio.sfx.shieldBreak();
-          fx.shake(10 * sh, 5);
+          fx.shake(10, 5);
           fx.ring(run.x, run.y, 0, run.s.ventRadius, '#FFFFFF', 0.3, 5);
           fx.burst(run.x, run.y, 40, {
             color: ['#FFFFFF', C.hull], speed: 320, size: 2.4, life: 0.5, shape: 3, drag: 0.9,
@@ -484,7 +497,7 @@ export class Game {
           audio.sfx.rush();
           audio.duckMusic(0.4, 0.5);
           fx.flash('#FFFFFF', 0.85, 9);
-          fx.shake(16 * sh, 4);
+          fx.shake(16, 4);
           fx.burst(run.x, run.y, 70, {
             color: ['#FFFFFF', C.gold, C.pellet], speed: 420, size: 3, life: 0.9, shape: 2, drag: 0.92,
           });
@@ -526,14 +539,14 @@ export class Game {
         case 'era':
           audio.sfx.levelUp();
           fx.flash('#FFFFFF', 0.4, 5);
-          fx.shake(7 * sh, 4);
+          fx.shake(7, 4);
           break;
 
         case 'spark':
           audio.sfx.unlock();
           audio.tone({ freq: 1800, freq2: 220, type: 'sine', dur: 0.7, gain: 0.25 });
           fx.flash('#FFFFFF', 0.85, 3);
-          fx.shake(18 * sh, 3);
+          fx.shake(18, 3);
           break;
 
         case 'mercy':
@@ -545,7 +558,7 @@ export class Game {
           this.deathAt = performance.now();
           audio.sfx.death();
           audio.stopMusic(0.12);
-          fx.shake(22 * sh, 2.4);
+          fx.shake(22, 2.4);
           fx.flash('#FFFFFF', 0.6, 6);
           fx.burst(run.x, run.y, 90, {
             color: ['#FFFFFF', C.hull, C.pellet], speed: 380, size: 3, life: 1.2, shape: 2, drag: 0.94,
@@ -558,7 +571,6 @@ export class Game {
 
   killFx(x, y, boss) {
     const fx = this.fx;
-    const sh = this.shakeScale ?? 1;
     // Kills only chain-pitch upward while they are genuinely consecutive.
     const now = this.t;
     if (now - (this.lastKillT ?? -9) < 0.7) this.killChain = Math.min(12, (this.killChain ?? 0) + 1);
@@ -568,7 +580,7 @@ export class Game {
     audio.sfx.shatter(this.killChain);
     // Never eat the player's panic response with a freeze frame.
     if (!run_isVenting(this.run)) this.loop.freeze(boss ? 0.26 : 0.045);
-    fx.shake((boss ? 18 : 4) * sh, boss ? 3 : 8);
+    fx.shake(boss ? 18 : 4, boss ? 3 : 8);
     fx.burst(x, y, boss ? 60 : 10, {
       color: boss ? [C.husk, '#FFFFFF', C.gold] : [C.pellet, '#FFFFFF'],
       speed: boss ? 340 : 200, size: boss ? 3 : 2, life: boss ? 0.9 : 0.45, shape: 3, drag: 0.93,
@@ -617,8 +629,11 @@ export class Game {
     this.renderer.background(ctx, run, v, opt);
     this.renderer.world(ctx, run, v, opt);
     fx.drawRings(ctx);
-    this.renderer.player(ctx, run, opt);
     fx.drawParticles(ctx);
+    // Both of these go ABOVE the particle layer on purpose: a big burst must
+    // never be able to hide a bullet's white core or the player's own hitbox.
+    this.renderer.projectileCores(ctx, run, opt);
+    this.renderer.player(ctx, run, opt);
     ctx.restore();
 
     this.renderer.overlays(ctx, run, v, opt);

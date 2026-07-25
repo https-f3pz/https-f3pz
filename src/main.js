@@ -49,6 +49,8 @@ const fx = new Fx({ reduceMotion: !!save.settings.reduceFx });
 
 let game = null;
 const loop = new Loop({
+  // Latch and act on discrete input exactly once per rendered frame.
+  beginFrame: () => game.beginFrame(),
   update: (dt) => game.update(dt, input),
   render: (realDt) => {
     game.render(ctx, view, realDt);
@@ -102,8 +104,13 @@ requestAnimationFrame(() =>
 
 // A new service worker version is waiting: adopt it at the next quiet moment
 // rather than yanking the page out from under a live run.
+//
+// `hadController` matters: on a first-ever visit the worker installs, calls
+// clients.claim(), and fires controllerchange immediately. Without this guard
+// that reloads the page underneath a first-time player for no reason.
+const hadController = !!navigator.serviceWorker?.controller;
 navigator.serviceWorker?.addEventListener?.('controllerchange', () => {
-  if (game.state === 'menu') location.reload();
+  if (hadController && game.state === 'menu') location.reload();
 });
 
 // Debug/automation surface. The play-test harness drives the game through

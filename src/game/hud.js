@@ -13,7 +13,7 @@ const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 export function drawHud(ctx, run, view, opt, t) {
   const top = view.insetTop;
   const heat = run.heat;
-  const k = heat / 100;
+  const k = clamp(heat / run.s.flashAt, 0, 1);
   const gold = opt.newBestLive;
 
   // ---- score. Its drop shadow literally overheats as the run does.
@@ -57,7 +57,7 @@ export function drawHud(ctx, run, view, opt, t) {
     ctx.save();
     roundRect(ctx, gx, gy, gw, gh, gh / 2);
     ctx.clip();
-    ctx.fillStyle = opt.highContrast ? '#FFFFFF' : heatColor(heat);
+    ctx.fillStyle = opt.highContrast ? '#FFFFFF' : heatColor(k * 100);
     ctx.fillRect(gx, gy, fillW, gh);
     ctx.restore();
   }
@@ -77,7 +77,10 @@ export function drawHud(ctx, run, view, opt, t) {
 
   // VENT ARMED marker — you can always see the gun is loaded.
   const armX = gx + gw * (HEAT.ventGate / run.s.flashAt);
-  const armed = run.heat >= HEAT.ventGate;
+  // `run.armed` is the same predicate requestVent() uses. Showing "armed"
+  // whenever heat is merely above the gate made the HUD promise a vent during
+  // the 1s cooldown, when the vent would silently refuse.
+  const armed = run.armed;
   ctx.save();
   ctx.globalAlpha = armed ? 0.6 + 0.4 * Math.sin(t * 8) : 0.35;
   ctx.fillStyle = armed ? '#FFFFFF' : C.dim;
@@ -91,7 +94,7 @@ export function drawHud(ctx, run, view, opt, t) {
 
   // ---- multiplier
   outlinedText(ctx, `${run.mult}×`, gx - 6, gy + gh / 2, {
-    size: 15, weight: 900, color: opt.highContrast ? '#FFFFFF' : heatColor(heat),
+    size: 15, weight: 900, color: opt.highContrast ? '#FFFFFF' : heatColor(k * 100),
     align: 'right', outlineWidth: 3, font: FONT,
   });
 

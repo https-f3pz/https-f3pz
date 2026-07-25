@@ -75,14 +75,14 @@ export function makeWorld() {
 
     // Player fire.
     bullets: new Pool(
-      () => ({ x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0, dmg: 1, pierce: 0, hit: null, age: 0 }),
+      () => ({ x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0, dmg: 1, pierce: 0, hits: [], age: 0 }),
       160
     ),
 
     enemies: new Pool(
       () => ({
         x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0,
-        type: null, hp: 1, maxHp: 1, r: 10, angle: 0, spin: 0,
+        type: null, hp: 1, maxHp: 1, r: 10, angle: 0, spin: 0, expired: false,
         fireT: 0, state: 0, stateT: 0, age: 0,
         grazeT: 0, outT: 0, flash: 0, stun: 0, boss: false, cycle: 0, arm: 0,
         tx: 0, ty: 0, dashX: 0, dashY: 0,

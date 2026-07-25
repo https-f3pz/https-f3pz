@@ -173,6 +173,9 @@ export class Input {
     }
   }
 
+  // Drops held pointers without discarding the current frame's queued events —
+  // a backgrounding that lands mid-frame should not swallow the tap the player
+  // already made. endFrame() clears the queues at their normal time.
   clearAll() {
     this.pointers.clear();
     this.primary = null;

@@ -10,10 +10,15 @@ const STEP = 1 / 120; // seconds of simulated time per tick
 const MAX_FRAME = 0.25; // never simulate more than 250ms after a stall
 
 export class Loop {
-  constructor({ update, render, onResize }) {
+  constructor({ update, render, onResize, beginFrame }) {
     this.update = update;
     this.render = render;
     this.onResize = onResize;
+    // Runs exactly once per rendered frame, before any simulation substep.
+    // Discrete input has to be latched here: a frame can run zero substeps
+    // (during slow-mo, hitstop, or on a high-refresh display), and anything
+    // consumed inside the substep loop would then be dropped or replayed.
+    this.beginFrame = beginFrame;
     this.acc = 0;
     this.last = 0;
     this.raf = 0;
@@ -82,6 +87,8 @@ export class Loop {
     }
 
     this.acc += simTime * this.timeScale;
+
+    if (this.beginFrame) this.beginFrame(real);
 
     // Cap catch-up work so a slow device degrades to slow-motion rather than
     // entering a death spiral of ever-longer frames.

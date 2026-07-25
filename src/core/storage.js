@@ -98,10 +98,12 @@ export function load() {
 }
 
 let flushTimer = 0;
+let dirty = false;
 
 export function save(patch) {
   const c = load();
   if (patch && patch !== c) mergeInto(c, patch);
+  dirty = true;
   // Coalesce writes — localStorage is synchronous and can cost a frame.
   if (flushTimer) return cache;
   flushTimer = setTimeout(flushNow, 250);
@@ -111,6 +113,11 @@ export function save(patch) {
 export function flushNow() {
   clearTimeout(flushTimer);
   flushTimer = 0;
+  // Backgrounding fires visibilitychange and pagehide back to back; without
+  // this the app does two or three synchronous serialise-and-write cycles at
+  // exactly the moment the OS is trying to suspend it.
+  if (!dirty) return;
+  dirty = false;
   try {
     backend.setItem(KEY, JSON.stringify(cache || defaults()));
   } catch {
@@ -120,6 +127,7 @@ export function flushNow() {
 
 export function reset() {
   cache = defaults();
+  dirty = true;
   flushNow();
   return cache;
 }

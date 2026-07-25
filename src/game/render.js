@@ -9,7 +9,7 @@
 
 import { VW, C, HEAT, ERAS, HEAT_RAMP } from './config.js';
 import { PROJ } from './entities.js';
-import { polygon, withAlpha, mixHex, clamp, lerp, ease } from '../core/draw.js';
+import { polygon, withAlpha, mixHex, clamp, lerp, ease, cachedRadialGradient } from '../core/draw.js';
 
 const TAU = Math.PI * 2;
 
@@ -45,7 +45,7 @@ export class Renderer {
     const heat = run ? run.heat : 0;
     const beat = 0.5 + 0.5 * Math.sin(this.t * (heat > 90 ? 8 : 4) * Math.PI);
     let grid = era.grid;
-    if (!opt.highContrast && heat >= HEAT.flashAt - 1) grid = C.pellet;
+    if (!opt.highContrast && run && heat >= run.s.flashAt - 1) grid = C.pellet;
 
     // Scrolling horizon grid. Cheap, and it makes the arena feel like it is
     // moving even when the ship is holding still.
@@ -308,9 +308,19 @@ export class Renderer {
     }
     ctx.stroke();
 
-    // Pass 3 — the invariant. An opaque white core on every hostile
-    // projectile, drawn last so no glow, no lightning and no particle can
-    // ever hide the thing that kills you.
+    ctx.restore();
+  }
+
+  /**
+   * Pass 3 — the invariant, drawn as its own pass so it can be sequenced after
+   * the particle layer. An opaque white core on every hostile projectile, so
+   * no glow, no lightning and no particle burst can ever hide the thing that
+   * is about to kill you.
+   */
+  projectileCores(ctx, run, opt) {
+    const w = run.world;
+    if (!w.proj.count) return;
+    ctx.save();
     ctx.fillStyle = '#FFFFFF';
     ctx.beginPath();
     for (let i = 0; i < w.proj.count; i++) {
@@ -320,7 +330,7 @@ export class Renderer {
       ctx.arc(p.x, p.y, 1.5, 0, TAU);
     }
     ctx.fill();
-    if (hc) {
+    if (opt.highContrast) {
       // In high contrast everything is white, so hostiles get a black rim to
       // separate them from the player's cyan.
       ctx.strokeStyle = '#000000';
@@ -366,6 +376,9 @@ export class Renderer {
     const hc = opt.highContrast;
     const hull = hc ? '#00E5FF' : C.hull;
     const heat = run.heat;
+    // Normalised against the run's own ignition point, which POSITIVE
+    // FEEDBACK raises to 120.
+    const hk = clamp(heat / run.s.flashAt, 0, 1) * 100;
 
     if (!run.dead) {
       // -- trail
@@ -384,13 +397,13 @@ export class Renderer {
 
       // -- graze ring: the primary heat readout, and never invisible
       const R = run.s.grazeRadius;
-      const bright = lerp(0.35, 1, heat / 100);
-      const spin = this.t * lerp(20, 160, heat / 100) * (Math.PI / 180);
+      const bright = lerp(0.35, 1, hk / 100);
+      const spin = this.t * lerp(20, 160, hk / 100) * (Math.PI / 180);
       ctx.save();
       ctx.translate(run.x, run.y);
       ctx.rotate(spin);
       ctx.globalAlpha = bright;
-      ctx.strokeStyle = hc ? '#FFFFFF' : heatColor(heat);
+      ctx.strokeStyle = hc ? '#FFFFFF' : heatColor(hk);
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 7]);
       ctx.beginPath();
@@ -409,7 +422,7 @@ export class Renderer {
       }
 
       // Above 80 the ring throws arcs — the visual language of "about to go".
-      if (heat > 80 && !opt.reduceGlow) {
+      if (hk > 80 && !opt.reduceGlow) {
         ctx.globalAlpha = 0.8;
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -468,16 +481,22 @@ export class Renderer {
 
   overlays(ctx, run, view, opt) {
     const { vh } = view;
-    const heat = run ? run.heat : 0;
+    const heat = run ? clamp(run.heat / run.s.flashAt, 0, 1) * 100 : 0;
 
     // Heat vignette: closes in and reddens as the run gets dangerous. This is
     // a mute-safe channel — it carries heat information without any sound.
     if (!opt.highContrast) {
-      const k = clamp((heat - 55) / 45, 0, 1);
-      if (k > 0.01) {
-        const g = ctx.createRadialGradient(VW / 2, vh / 2, vh * lerp(1.0, 0.68, k) * 0.42, VW / 2, vh / 2, vh * 0.75);
-        g.addColorStop(0, 'rgba(0,0,0,0)');
-        g.addColorStop(1, withAlpha(C.pellet, 0.16 + k * 0.34));
+      const kRaw = clamp((heat - 55) / 45, 0, 1);
+      if (kRaw > 0.01) {
+        // Quantised and cached: this ran createRadialGradient every frame,
+        // which is one of the more expensive things Canvas 2D can be asked to
+        // do 60 times a second.
+        const k = Math.round(kRaw * 12) / 12;
+        const g = cachedRadialGradient(
+          ctx, `vig${k}${Math.round(vh)}`,
+          VW / 2, vh / 2, vh * lerp(1.0, 0.68, k) * 0.42, vh * 0.75,
+          [[0, 'rgba(0,0,0,0)'], [1, withAlpha(C.pellet, 0.16 + k * 0.34)]]
+        );
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, VW, vh);
       }

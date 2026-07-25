@@ -36,16 +36,25 @@ const SHELL = [
   './icons/favicon-64.png',
 ];
 
+// Icons are nice to have; the code is not. Splitting them means a flaky
+// network can cost you an app icon but can never leave a "successfully"
+// installed service worker serving a half-cached shell that cannot boot —
+// which, because activate() then deletes the old cache, would brick offline
+// launch permanently rather than transiently.
+const OPTIONAL = SHELL.filter((u) => u.startsWith('./icons/'));
+const CORE = SHELL.filter((u) => !OPTIONAL.includes(u));
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE);
-      // Add individually: one 404 in addAll() would reject the whole install
-      // and leave the game with no offline copy at all.
+      // Any core file failing must reject the install, so the previous
+      // (working) service worker and its cache stay in place.
+      await Promise.all(CORE.map((url) => cache.add(new Request(url, { cache: 'reload' }))));
       await Promise.all(
-        SHELL.map((url) =>
+        OPTIONAL.map((url) =>
           cache.add(new Request(url, { cache: 'reload' })).catch(() => {
-            /* optional asset missing — the shell still works */
+            /* an icon is not worth failing the install over */
           })
         )
       );

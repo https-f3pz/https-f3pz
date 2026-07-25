@@ -87,6 +87,7 @@ export class Run {
     this.huskAlive = 0;
     this.huskKills = 0;
     this.spawnedTypes = new Set();
+    this.debutWait = 0;
 
     // ---- telemetry, used by the results screen to say something useful
     this.tel = {
@@ -539,7 +540,7 @@ export class Run {
       b.dmg = dmg;
       b.pierce = this.s.pierce + this.s.piercePerFlash * this.flashCount;
       b.age = 0;
-      b.hit = null;
+      b.hits.length = 0;
     }
     this.emit('shoot');
   }
@@ -587,13 +588,15 @@ export class Run {
       let consumed = false;
       for (let j = w.enemies.count - 1; j >= 0; j--) {
         const e = w.enemies.items[j];
-        if (e === b.hit) continue;
+        // `hits` is a list, not a single slot: a pierce-2 bullet that clipped
+        // A then B could otherwise come back around and damage A again.
+        if (b.hits.includes(e)) continue;
         const d = sweptMinDist(b.px, b.py, b.x, b.y, e.px, e.py, e.x, e.y);
         if (d <= e.r + 2) {
           this.damageEnemy(e, b.dmg, j);
           if (b.pierce > 0) {
             b.pierce--;
-            b.hit = e;
+            b.hits.push(e);
           } else {
             consumed = true;
           }
@@ -694,33 +697,51 @@ export class Run {
     const era = ERAS[this.eraIndex];
     const B = (budgetAt(this.time) * this.s.density * era.cadence + this.intensity) *
       (this.huskAlive > 0 ? 0.45 : 1);
-    this.credit += B * dt;
+    // Bank a little, never a lot. Unbounded banking meant every stretch spent
+    // at the cap was saved up and then dumped as a wall of simultaneous spawns.
+    this.credit = Math.min(this.credit + B * dt, 6);
 
-    const pool = [];
-    for (const key of ['drifter', 'spinner', 'lancer', 'bloom']) {
-      const def = ENEMIES[key];
-      if (this.time >= def.first) pool.push(def);
-    }
-    if (!pool.length) return;
-
-    const alive = this.world.enemies.count;
+    // Pips are enemies that have not landed yet. Leaving them out of the count
+    // let the cap overshoot by however many were in flight.
+    const alive = this.world.enemies.count + this.world.pips.count;
     if (alive >= CAPS.enemies) return;
     // Deliberately near-empty onboarding window.
     if (this.time < 12 && alive >= 3) return;
 
-    const def = this.rng.weighted(pool, (d) => (this.spawnedTypes.has(d.id) ? 1 / d.cost : 3));
+    const unlocked = ['drifter', 'spinner', 'lancer', 'bloom'].filter(
+      (k) => this.time >= ENEMIES[k].first
+    );
+    if (!unlocked.length) return;
+
+    // Each archetype gets a solo debut so the player meets one new threat at a
+    // time. This used to `return` whenever the field was busy, which — because
+    // a busy field is the normal state after ~15s — meant SPINNER, LANCER and
+    // BLOOM never spawned at all for an entire run. Now a pending debut waits
+    // for a quiet moment, throttles normal spawning to help one arrive, and is
+    // forced through after 8s so an archetype can never be starved out.
+    const debutId = unlocked.find((k) => !this.spawnedTypes.has(k));
+    if (debutId) {
+      const def = ENEMIES[debutId];
+      this.debutWait += dt;
+      if ((alive === 0 || this.debutWait > 8) && this.credit >= def.cost) {
+        this.credit -= def.cost;
+        this.spawnedTypes.add(debutId);
+        this.debutWait = 0;
+        this.spawnPip(VW / 2, this.arena.y - 10, def, def.color);
+        return;
+      }
+      // Ease off so the field can actually clear for the debut.
+      if (alive >= 4) return;
+    }
+
+    const pool = unlocked.filter((k) => this.spawnedTypes.has(k)).map((k) => ENEMIES[k]);
+    if (!pool.length) return;
+
+    const def = this.rng.weighted(pool, (d) => 1 / d.cost);
     if (this.credit < def.cost) return;
 
-    // The first of every archetype always arrives alone, so the player meets
-    // each new threat in isolation and learns what it does.
-    const firstOfType = !this.spawnedTypes.has(def.id);
-    if (firstOfType && alive > 0) return;
-
     this.credit -= def.cost;
-    this.spawnedTypes.add(def.id);
-
-    let x = this.rng.range(this.arena.x + 24, this.arena.x + this.arena.w - 24);
-    if (firstOfType) x = VW / 2;
+    const x = this.rng.range(this.arena.x + 24, this.arena.x + this.arena.w - 24);
     this.spawnPip(x, this.arena.y - 10, def, def.color);
   }
 
@@ -755,6 +776,10 @@ export class Run {
 
   spawnEnemy(x, y, def) {
     const w = this.world;
+    // The boss and BLOOM's escorts reach this without passing the director's
+    // check, so the cap is enforced here too. The boss is always allowed —
+    // losing it would strand the run's pacing.
+    if (def !== HUSK && w.enemies.count >= CAPS.enemies) return;
     const e = w.enemies.spawn();
     if (!e) return;
     const boss = def === HUSK;
@@ -780,6 +805,7 @@ export class Run {
     e.cycle = 0;
     e.arm = 0;
     e.ventHit = false;
+    e.expired = false;
     if (boss) {
       this.huskAlive++;
       e.ty = this.arena.y + 90;
@@ -811,7 +837,7 @@ export class Run {
       // Keep enemies inside the play column so nothing is unreachable.
       e.x = clamp(e.x, this.arena.x + e.r, this.arena.x + this.arena.w - e.r);
 
-      if (e.y > this.arena.y + this.arena.h + 60) w.enemies.release(i);
+      if (e.expired || e.y > this.arena.y + this.arena.h + 60) w.enemies.release(i);
     }
   }
 
@@ -899,7 +925,9 @@ export class Run {
           );
         }
         this.emit('bloomBurst', e.x, e.y);
-        this.world.enemies.release(index);
+        // Marked, not released: updateEnemies owns the pool slot, and
+        // releasing here made it release the swapped-in enemy a second time.
+        e.expired = true;
       }
     }
   }
@@ -1039,13 +1067,16 @@ export class Run {
     // SECOND SPARK — the safety net exists only in the danger band, which is
     // exactly the behaviour the game wants to teach.
     if (!this.sparkUsed && this.heat >= HEAT.sparkGate) {
+      // Read the multiplier BEFORE zeroing heat — mult is derived from heat,
+      // so paying out afterwards always paid at exactly 1x.
+      const payMult = this.mult;
       this.sparkUsed = true;
       this.heat = 0;
       this.iframes = 1.2;
       const w = this.world;
       for (let i = 0; i < w.proj.count; i++) {
         const p = w.proj.items[i];
-        if (!p.converted) this.convertToMote(p, 10 * this.mult);
+        if (!p.converted) this.convertToMote(p, 10 * payMult);
       }
       this.loop.freeze(0.25);
       this.emit('spark');
