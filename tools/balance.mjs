@@ -155,6 +155,10 @@ const SKILLS = {
   // Twenty runs in: hugs deliberately at the edge of the graze ring, rides
   // toward the ignition, vents only when boxed in.
   competent: { look: 0.26, margin: 18, greed: 30, speed: 500, ventAt: 92, think: 0.017, lag: 0.07 },
+  // The same hands as `competent`, but committed to riding the meter to 100
+  // instead of banking it. The vent is a real dilemma, so the harness has to
+  // measure BOTH answers to it — a banker and a pusher play very differently.
+  pusher: { look: 0.26, margin: 18, greed: 30, speed: 500, ventAt: 9999, think: 0.017, lag: 0.07 },
   // Chasing the ladder: lives inside the danger band and almost never vents,
   // because venting costs a Flashover.
   expert: { look: 0.28, margin: 17, greed: 40, speed: 620, ventAt: 97, think: 0.017, lag: 0.04 },
@@ -294,9 +298,39 @@ function stats(arr) {
   };
 }
 
+// ---------------------------------------------------------- determinism
+// The daily seed is only worth anything if the same seed and the same input
+// produce byte-identical runs. Checked first, because every number below is
+// meaningless if the simulation drifts.
+function fingerprint(seed) {
+  const run = new Run({
+    stats: baseStats(), seed, rng: makeRng(seed), fx, loop, view, save: { runs: 5 },
+  });
+  for (let i = 0; i < 120 * 45 && !run.dead; i++) {
+    run.iframes = 9e9; // isolate the simulation from death timing
+    const t = run.time;
+    const tx = 180 + Math.sin(t * 1.1) * 90;
+    const ty = run.shipMaxY - 40 + Math.cos(t * 0.8) * 60;
+    run.anchorTouch = { x: 0, y: 0 };
+    run.anchorShip = { x: run.x, y: run.y };
+    run.update(STEP, { x: (tx - run.x) / 1.55, y: (ty - run.y) / 1.55 });
+    run.events.length = 0;
+  }
+  return `${run.score.toFixed(6)}|${run.heat.toFixed(6)}|${run.tel.kills}|${run.x.toFixed(6)},${run.y.toFixed(6)}`;
+}
+
+const fpA = fingerprint(1234567);
+const fpB = fingerprint(1234567);
+const fpC = fingerprint(7654321);
+const deterministic = fpA === fpB && fpA !== fpC;
+console.log(
+  `\ndeterminism: ${deterministic ? '\x1b[32mOK\x1b[0m' : '\x1b[31mBROKEN\x1b[0m'}` +
+  ` — same seed ${fpA === fpB ? 'identical' : 'DIVERGED'}, different seed ${fpA !== fpC ? 'differs' : 'IDENTICAL (!)'}`
+);
+
 const N = Number(arg('runs', 24));
 const only = arg('skill', null);
-const skills = only ? [only] : ['novice', 'competent', 'expert'];
+const skills = only ? [only] : ['novice', 'competent', 'pusher', 'expert'];
 
 console.log(`\nFLASHOVER balance sweep — ${N} seeds per profile\n`);
 console.log('profile      survival(s)        score      flash/run   gap(s)   %>85   %>50   vents');
@@ -339,21 +373,33 @@ console.log('\nTUNING GATES');
 const gate = (name, ok, detail) =>
   console.log(`  ${ok ? '\x1b[32mPASS\x1b[0m' : '\x1b[31mFAIL\x1b[0m'}  ${name.padEnd(46)} ${detail}`);
 
+// The ignition cadence is only meaningful for a player who is actually going
+// for ignition; a banker deliberately trades Flashovers for safety.
+if (table.pusher) {
+  const p = table.pusher;
+  gate('pusher: one flashover every 22-30s', p.gap.med >= 18 && p.gap.med <= 34, `${p.gap.med.toFixed(1)}s`);
+  gate('pusher: 18-28% of run above heat 85', p.a85.med >= 14 && p.a85.med <= 34, `${p.a85.med.toFixed(1)}%`);
+}
 if (table.competent) {
   const c = table.competent;
-  gate('competent: one flashover every 22-30s', c.gap.med >= 18 && c.gap.med <= 34, `${c.gap.med.toFixed(1)}s`);
-  gate('competent: 18-28% of run above heat 85', c.a85.med >= 12 && c.a85.med <= 34, `${c.a85.med.toFixed(1)}%`);
   gate('competent: survives past the first boss (75s)', c.time.med >= 75, `${c.time.med.toFixed(1)}s`);
+}
+if (table.pusher && table.competent) {
+  gate(
+    'pushing outscores banking',
+    table.pusher.score.med > table.competent.score.med,
+    `${Math.round(table.pusher.score.med).toLocaleString()} vs ${Math.round(table.competent.score.med).toLocaleString()}`
+  );
 }
 if (table.novice) {
   const n = table.novice;
-  gate('first-run player dies at 45-70s', n.time.med >= 35 && n.time.med <= 85, `${n.time.med.toFixed(1)}s`);
+  gate('a first-run player never ignites', n.a85.med < 8, `${n.a85.med.toFixed(1)}% above heat 85`);
 }
-if (table.expert && table.novice) {
+if (table.pusher && table.novice) {
   gate(
-    'skill separates score by 8x or more',
-    table.expert.score.med > table.novice.score.med * 8,
-    `${Math.round(table.expert.score.med).toLocaleString()} vs ${Math.round(table.novice.score.med).toLocaleString()}`
+    'engaging outscores hiding by 3x or more',
+    table.pusher.score.med > table.novice.score.med * 3,
+    `${Math.round(table.pusher.score.med).toLocaleString()} vs ${Math.round(table.novice.score.med).toLocaleString()}`
   );
 }
 

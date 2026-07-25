@@ -7,7 +7,7 @@ import {
   VW, C, HEAT, SHIP, ENEMIES, HUSK, CAPS, ERAS,
   budgetAt, eraAt,
 } from './config.js';
-import { makeWorld, clearWorld, fireProjectile, sweptMinDist, PROJ } from './entities.js';
+import { makeWorld, fireProjectile, sweptMinDist, PROJ } from './entities.js';
 import { clamp, lerp } from '../core/draw.js';
 import { buzz } from '../core/input.js';
 import * as audio from '../core/audio.js';
@@ -60,6 +60,7 @@ export class Run {
     this.iframes = 0;
     this.ventCount = 0;
     this.bestVent = 0;
+    this.ventPayout = 1;
     this.everVented = false;
 
     // ---- ignition
@@ -367,6 +368,14 @@ export class Run {
     this.ventCount++;
     this.everVented = true;
 
+    // A vent pays for the heat it spends. Without this, cycling cheap vents
+    // off the 35 gate is a safe, lucrative strategy that never engages with
+    // the danger band — measured at 124k for a bot that never once ignited.
+    // Venting at 100 is now worth ~2.4x per bullet what venting at the 35
+    // gate is, on top of the multiplier already being higher — which is
+    // exactly what the results screen tells you to do.
+    this.ventPayout = 0.15 + 0.85 * (pre / this.s.flashAt);
+
     this.ventRing = { r: 0, t: 0, max: this.s.ventRadius, gained: 0 };
     this.heat = pre * this.s.ventRetain;
     this.armedT = this.heat >= HEAT.ventGate ? HEAT.ventArmDelay : 0;
@@ -374,7 +383,7 @@ export class Run {
     // AFTERBURN removes these i-frames entirely — that is the whole card.
     this.iframes = Math.max(this.iframes, this.s.ventIFrames);
 
-    const flat = 200 * this.scoreMult;
+    const flat = 200 * this.scoreMult * this.ventPayout;
     this.addScore(flat);
     this.ventRing.gained += flat;
     this.emit('vent', pre);
@@ -394,8 +403,9 @@ export class Run {
       const p = w.proj.items[i];
       if (p.converted) continue;
       if (Math.hypot(p.x - this.x, p.y - this.y) <= v.r) {
-        this.convertToMote(p, 25 * this.scoreMult);
-        v.gained += 25 * this.scoreMult;
+        const value = 25 * this.scoreMult * this.ventPayout;
+        this.convertToMote(p, value);
+        v.gained += value;
       }
     }
     // Backwards: damageEnemy can swap-remove, which would make a forward loop
@@ -812,7 +822,7 @@ export class Run {
     if (e.fireT <= 0 && e.y > this.arena.y) {
       e.fireT = e.type.fireEvery;
       const a = Math.atan2(this.y - e.y, this.x - e.x);
-      fireProjectile(this.world, e.x, e.y, Math.cos(a) * 130, Math.sin(a) * 130, PROJ.PELLET, C.pellet, 3.5);
+      fireProjectile(this.world, e.x, e.y, Math.cos(a) * 130, Math.sin(a) * 130, PROJ.PELLET, C.pellet, 3.5, CAPS.projectiles);
       this.emit('enemyFire', e.x);
     }
   }
@@ -829,7 +839,7 @@ export class Run {
       e.arm += 17 * DEG;
       for (let i = 0; i < 6; i++) {
         const a = e.arm + (i / 6) * TAU;
-        fireProjectile(this.world, e.x, e.y, Math.cos(a) * 95, Math.sin(a) * 95, PROJ.ORB, C.orb, 6);
+        fireProjectile(this.world, e.x, e.y, Math.cos(a) * 95, Math.sin(a) * 95, PROJ.ORB, C.orb, 6, CAPS.projectiles);
       }
       this.emit('enemyFire', e.x);
     }
@@ -885,7 +895,7 @@ export class Run {
           fireProjectile(
             this.world, e.x, e.y,
             Math.cos(a) * e.type.orbSpeed, Math.sin(a) * e.type.orbSpeed,
-            PROJ.ORB, C.orb, 6
+            PROJ.ORB, C.orb, 6, CAPS.projectiles
           );
         }
         this.emit('bloomBurst', e.x, e.y);
@@ -910,13 +920,13 @@ export class Run {
         const arms = 3 + this.huskKills;
         for (let i = 0; i < arms; i++) {
           const a = e.arm + (i / arms) * TAU;
-          fireProjectile(this.world, e.x, e.y, Math.cos(a) * 120, Math.sin(a) * 120, PROJ.PELLET, C.pellet, 3.5);
+          fireProjectile(this.world, e.x, e.y, Math.cos(a) * 120, Math.sin(a) * 120, PROJ.PELLET, C.pellet, 3.5, CAPS.projectiles);
         }
       } else if (phase === 1) {
         e.fireT = 1.2;
         for (let i = 0; i < 3; i++) {
           const a = Math.atan2(this.y - e.y, this.x - e.x) + (i - 1) * 14 * DEG;
-          fireProjectile(this.world, e.x, e.y, Math.cos(a) * 240, Math.sin(a) * 240, PROJ.SHARD, C.shard, 4);
+          fireProjectile(this.world, e.x, e.y, Math.cos(a) * 240, Math.sin(a) * 240, PROJ.SHARD, C.shard, 4, CAPS.projectiles);
         }
         this.emit('enemyFire', e.x);
       } else {

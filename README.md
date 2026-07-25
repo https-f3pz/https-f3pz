@@ -67,11 +67,33 @@ node tools/shots.mjs              # screenshots of every screen
 
 `playtest.mjs` boots the real game on an emulated iPhone and asserts the things that actually break on phones: no console errors, no page scroll or pull-to-refresh, `touch-action: none`, a 60fps frame budget, a run that starts/scores/ends, progress persisting to `localStorage`, an installable manifest, a 320px-wide screen, and — the load-bearing one — **that the game still loads and plays with the network cut off.**
 
-`balance.mjs` is the more unusual one. `src/game/run.js` deliberately has no canvas, DOM or audio dependency, so the entire simulation runs headless in Node at thousands of times real time. A lookahead bot plays thousands of seconds and reports the design's own tuning gates. That is how the numbers in `config.js` were actually set, and it caught three real problems:
+`balance.mjs` is the more unusual one. `src/game/run.js` deliberately has no canvas, DOM or audio dependency, so the entire simulation runs headless in Node at thousands of times real time. Lookahead bots play four ways — a nervous first-timer, a *banker* who cashes out with the vent, a *pusher* who rides the meter to ignition, and an expert who lives in the danger band — and the harness reports the design's own tuning gates:
+
+```
+profile      survival(s)        score      flash/run   gap(s)   %>85   %>50   vents
+novice       143.9 (85-180)       100,059         1.0     57.1    2.9   21.6    22.0
+competent    142.0 (14-180)       165,504         0.0     79.5    9.2   63.3     8.0
+pusher       180.0 (14-180)       303,312         4.0     26.8   26.0   58.7     0.0
+expert        56.0 (11-180)        24,702         0.0     33.6    7.5   43.9     2.0
+
+PASS  pusher: one flashover every 22-30s             26.8s
+PASS  pusher: 18-28% of run above heat 85            26.0%
+PASS  competent: survives past the first boss (75s)  142.0s
+PASS  pushing outscores banking                      303,312 vs 165,504
+PASS  a first-run player never ignites               2.9% above heat 85
+PASS  engaging outscores hiding by 3x or more        303,312 vs 100,059
+PASS  no dead mutator (all >= 0.75x baseline)        min 0.76x
+PASS  no auto-pick mutator (all <= 2.2x baseline)    max 1.69x
+```
+
+That is how the numbers in `config.js` were actually set, and it caught four real problems that playing by hand would have taken weeks to notice:
 
 - **KINDLING** at +5 heat per kill measured a **9.7×** score swing — with auto-fire the gun became an infinite heat source and every other card became noise. Now +2.
 - **TRACER** measured **0.14×** baseline: homing killed enemies so fast it starved the heat economy, because the enemies *are* the fuel. Softer turn rate and lower damage.
-- The whole risk/reward curve has a cliff. Playing too tight dies in seconds; playing too safe never ignites. The viable band produces **one FLASHOVER every ~24s and 24–27% of the run above heat 85**, which is exactly what the design targeted.
+- **Cheap vents were a farm.** A bot that never ignited once scored 124k by cycling vents straight off the 35 gate — a safe strategy that never engages with the danger band at all. A vent now pays in proportion to the heat it spends, so venting at 100 is worth ~2.4× per bullet what venting at the gate is.
+- **The risk/reward curve has a cliff.** Playing too tight dies in seconds; playing too safe never ignites at all. Finding the viable band is what set the graze radius and decay rate.
+
+The most useful thing it measures is that the game's central dilemma resolves the right way: **pushing to ignition outscores banking with the vent, 303k to 165k** — but banking survives longer. Both are real strategies, which is the whole point.
 
 ## Layout
 

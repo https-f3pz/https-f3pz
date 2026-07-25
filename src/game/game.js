@@ -5,8 +5,7 @@
 // knows nothing about screens; the screens know nothing about the simulation.
 
 import {
-  VW, VH_MIN, VH_MAX, C, HEAT, MUTATORS, DRAFT_TIMES, PRESSURE,
-  baseStats, CORES,
+  VW, VH_MIN, VH_MAX, C, HEAT, MUTATORS, DRAFT_TIMES, PRESSURE, baseStats,
 } from './config.js';
 import { Run } from './run.js';
 import { Renderer, heatColor } from './render.js';
@@ -17,7 +16,7 @@ import { makeRng, hashSeed, randomSeedWord } from '../core/rng.js';
 import { load, save as writeSave, reset as resetSave } from '../core/storage.js';
 import { recordRun, coachingLine, coreById, dailySeed, todayKey } from './meta.js';
 import { setHaptics, buzz } from '../core/input.js';
-import { clamp, lerp, outlinedText } from '../core/draw.js';
+import { clamp, lerp } from '../core/draw.js';
 import * as audio from '../core/audio.js';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';

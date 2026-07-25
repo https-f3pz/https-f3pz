@@ -115,8 +115,11 @@ export function clearWorld(w) {
 
 // Spawns a hostile projectile, respecting the hard cap. Returns null when the
 // cap is hit — the spawner must handle that rather than assume success.
-export function fireProjectile(w, x, y, vx, vy, kind, color, r) {
-  let p = w.proj.spawn();
+export function fireProjectile(w, x, y, vx, vy, kind, color, r, cap = 180) {
+  // The cap is enforced here, not left to the pool size — a screen past ~180
+  // hostile projectiles stops being readable long before it stops being
+  // performant, so the spawner must refuse rather than hope.
+  let p = w.proj.count >= cap ? null : w.proj.spawn();
   if (!p) {
     // At cap: recycle the oldest projectile that is already off-screen, and if
     // there is none, refuse. Never silently delete something the player is
