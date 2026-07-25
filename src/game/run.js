@@ -16,7 +16,7 @@ const DEG = Math.PI / 180;
 const TAU = Math.PI * 2;
 
 export class Run {
-  constructor({ stats, seed, rng, fx, loop, view, save }) {
+  constructor({ stats, seed, rng, fx, loop, view, save, daily = false }) {
     this.s = stats;
     this.seed = seed;
     this.rng = rng;
@@ -73,8 +73,9 @@ export class Run {
 
     this.sparkUsed = false;
     // A brand new player gets exactly one silent revive so run 1 is never a
-    // 12-second humiliation.
-    this.mercy = (save?.runs ?? 0) === 0 ? 1 : 0;
+    // 12-second humiliation — but never on the daily, where a free life for
+    // whoever happens to be new would make the shared seed meaningless.
+    this.mercy = !daily && (save?.runs ?? 0) === 0 ? 1 : 0;
 
     // ---- director
     this.credit = 0;

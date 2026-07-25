@@ -60,8 +60,13 @@ export class UI {
       align = 'center',
     } = opts;
 
+    // Inflating to MIN_TOUCH is only safe up to the space actually available.
+    // `pitch` is the caller's row spacing; without it, 38px rows on a 42px
+    // pitch produced hit rects that overlapped by 4px, and a tap in the
+    // visible gap between two rows activated both of them.
+    const pitch = opts.pitch ?? Infinity;
     const padX = Math.max(0, (MIN_TOUCH - w) / 2);
-    const padY = Math.max(0, (MIN_TOUCH - h) / 2);
+    const padY = Math.max(0, Math.min((MIN_TOUCH - h) / 2, (pitch - h) / 2));
     const hx = x - padX;
     const hy = y - padY;
     const hw = w + padX * 2;
@@ -72,21 +77,39 @@ export class UI {
     let held = false;
     let clicked = false;
     if (!disabled) {
-      for (const p of input.presses) if (inside(p)) this.hot = key;
+      // Every pointer event may be claimed by at most one widget per frame.
+      // Without this, overlapping hit areas each independently matched the
+      // same press+release pair and all of them fired.
+      for (const p of input.presses) {
+        if (!p.used && inside(p)) {
+          p.used = true;
+          this.hot = key;
+        }
+      }
       if (this.hot === key) {
         // Held as long as any active pointer is inside.
         for (const [, p] of input.pointers) if (inside(p)) held = true;
       }
       for (const r of input.releases) {
-        if (this.hot === key && inside(r)) {
+        if (this.hot === key && inside(r) && !r.used) {
+          r.used = true;
           clicked = true;
           this.hot = null;
         } else if (this.hot === key && input.pointers.size === 0) {
           this.hot = null;
         }
       }
-      // Keyboard/synthetic taps that never produced a press record.
-      for (const t of input.taps) if (inside(t) && !clicked) clicked = true;
+      // Keyboard and synthetic taps that never produced a press record. Only
+      // honoured when no other widget owns the interaction.
+      if (!clicked && (this.hot === null || this.hot === key)) {
+        for (const t of input.taps) {
+          if (!t.used && inside(t)) {
+            t.used = true;
+            clicked = true;
+            break;
+          }
+        }
+      }
     }
 
     const a = this._anim(key, held, dt);

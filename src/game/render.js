@@ -502,9 +502,14 @@ export class Renderer {
       }
     }
 
-    // Ignition wash.
+    // Ignition wash. Under REDUCE GLOW this becomes a flat, dim tint with no
+    // oscillation at all: a full-viewport luminance strobe at ~3.8Hz was the
+    // one effect in the game that no accessibility control touched, and it is
+    // exactly the kind of thing that should be damped.
     if (run && run.flashState) {
-      const a = run.flashState === 1 ? 0.35 : 0.10 + 0.05 * Math.sin(this.t * 24);
+      const a = opt.reduceGlow
+        ? 0.06
+        : run.flashState === 1 ? 0.35 : 0.10 + 0.05 * Math.sin(this.t * 24);
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       ctx.fillStyle = withAlpha('#FFFFFF', a);
@@ -517,7 +522,7 @@ export class Renderer {
       const k = 1 - run.sweepT / 0.7;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.fillStyle = withAlpha('#FFFFFF', 0.20 * (1 - k));
+      ctx.fillStyle = withAlpha('#FFFFFF', (opt.reduceGlow ? 0.06 : 0.20) * (1 - k));
       ctx.beginPath();
       ctx.moveTo(VW / 2, vh / 2);
       ctx.arc(VW / 2, vh / 2, vh, -Math.PI / 2, -Math.PI / 2 + TAU * ease.outCubic(k));

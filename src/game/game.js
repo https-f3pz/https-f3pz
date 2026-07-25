@@ -139,7 +139,7 @@ export class Game {
 
   // ------------------------------------------------------------ lifecycle
 
-  buildStats(coreId, pressure, picks) {
+  buildStats(coreId, pressure, picks, daily = false) {
     const s = baseStats();
     coreById(coreId).apply(s);
     for (let i = 0; i < pressure; i++) PRESSURE[i].apply(s);
@@ -149,7 +149,12 @@ export class Game {
     }
     // A fresh save gets a quietly gentler first few runs. It switches itself
     // off for good once the player has proved they don't need it.
-    const assisted = (this.save.bestTime || 0) < 60;
+    //
+    // Never on the daily: the whole point of a shared seed is that everyone
+    // plays the same run, and a save-derived density multiplier would make a
+    // new player's daily materially easier than a veteran's while both scores
+    // land in the same history.
+    const assisted = !daily && (this.save.bestTime || 0) < 60;
     if (assisted) {
       const r = this.save.runs || 0;
       s.density *= r === 0 ? 0.62 : r === 1 ? 0.78 : r === 2 ? 0.9 : 1;
@@ -158,6 +163,8 @@ export class Game {
   }
 
   beginRun({ daily = false } = {}) {
+    // Replaying a banked daily is practice, not a second scored attempt.
+    if (daily && this.save.daily?.date === todayKey() && this.save.daily?.locked) daily = false;
     this.isDaily = daily;
     this.picks = [];
     this.draftIndex = 0;
@@ -176,7 +183,8 @@ export class Game {
     this.runPressure = pressure;
 
     this.run = new Run({
-      stats: this.buildStats(coreId, pressure, this.picks),
+      stats: this.buildStats(coreId, pressure, this.picks, daily),
+      daily,
       seed,
       rng: makeRng(seed),
       fx: this.fx,
@@ -215,7 +223,7 @@ export class Game {
       isDaily: this.isDaily,
       declinedAll,
     });
-    this.coach = coachingLine(this.run);
+    this.coach = coachingLine(this.run, this.save.settings.ventMode);
   }
 
   debugKill() {
@@ -301,7 +309,7 @@ export class Game {
     if (m) {
       this.picks.push(m.id);
       // Rebuild the whole stat block so mutator order can never matter.
-      this.run.s = this.buildStats(this.runCoreId, this.runPressure, this.picks);
+      this.run.s = this.buildStats(this.runCoreId, this.runPressure, this.picks, this.isDaily);
       audio.sfx.unlock();
       buzz(18);
       this.fx.flash('#ffffff', 0.3, 6);

@@ -220,6 +220,61 @@ async function main() {
   });
   check('progress persists to localStorage', !!persisted && persisted.runs >= 1, `runs=${persisted?.runs}`);
 
+  // ------------------------------------------- one tap, one setting changed
+  // Adjacent settings rows used to have overlapping touch areas, so a tap in
+  // the visible gap between two rows flipped both of them.
+  const touchTest = await page.evaluate(async () => {
+    const g = window.__GAME__.game;
+    g.screen = 'settings';
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    const v = g.view;
+    const toDevice = (lx, ly) => ({ x: lx * v.scale + v.ox, y: ly * v.scale + v.oy });
+    // Layout mirrors drawSettings: rows start at insetTop+56, pitch 48, h 38.
+    const row0 = v.insetTop + 56;
+    const pitch = 48;
+    const h = 38;
+    return {
+      gap: toDevice(180, row0 + h + (pitch - h) / 2), // dead centre of the gap
+      rowA: toDevice(180, row0 + h / 2),
+      rowB: toDevice(180, row0 + pitch + h / 2),
+    };
+  });
+
+  const settingsAfter = async (pt) => {
+    await press(page, pt.x, pt.y, 90);
+    await page.waitForTimeout(180);
+    return page.evaluate(() => {
+      const s = window.__GAME__.game.save.settings;
+      return { sound: s.sound, music: s.music };
+    });
+  };
+
+  const before = await page.evaluate(() => {
+    const s = window.__GAME__.game.save.settings;
+    return { sound: s.sound, music: s.music };
+  });
+  const afterGap = await settingsAfter(touchTest.gap);
+  const gapChanged = Object.keys(before).filter((k) => before[k] !== afterGap[k]);
+  check(
+    'a tap in the gap between settings rows changes at most one setting',
+    gapChanged.length <= 1,
+    `changed: [${gapChanged.join(', ')}]`
+  );
+
+  const beforeRow = afterGap;
+  const afterRow = await settingsAfter(touchTest.rowA);
+  const rowChanged = Object.keys(beforeRow).filter((k) => beforeRow[k] !== afterRow[k]);
+  check('a tap on a settings row changes exactly one setting', rowChanged.length === 1, `changed: [${rowChanged.join(', ')}]`);
+
+  await page.evaluate(() => {
+    const g = window.__GAME__.game;
+    g.save.settings.sound = true;
+    g.save.settings.music = true;
+    g.applySettings();
+    g.screen = 'title';
+  });
+
   // ------------------------------------------------- service worker offline
   const swState = await page.evaluate(async () => {
     if (!('serviceWorker' in navigator)) return 'unsupported';

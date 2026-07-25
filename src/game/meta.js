@@ -109,6 +109,10 @@ function updateDaily(save, run, isDaily) {
   if (!isDaily) return;
   const key = todayKey();
   const d = save.daily;
+  // One seed, one shot: once today's attempt is banked, further runs on the
+  // same seed are practice. Without this the daily was unlimited retries and
+  // the streak it feeds was meaningless as a comparison.
+  if (d.date === key && d.locked) return;
   if (d.date !== key) {
     // A streak only survives if yesterday was played.
     const yesterday = todayKey(new Date(Date.now() - 86400000));
@@ -116,7 +120,8 @@ function updateDaily(save, run, isDaily) {
     d.date = key;
     d.score = 0;
   }
-  if (run.score > d.score) d.score = run.score;
+  d.score = run.score;
+  d.locked = true;
   d.history = [...(d.history || []).filter((h) => h.date !== key), { date: key, score: d.score }].slice(-30);
 }
 
@@ -163,7 +168,7 @@ export function recordRun(save, run, ctx = {}) {
  * One sentence, chosen by priority, that tells the player what to do
  * differently. Legible failure is worth more than any unlock.
  */
-export function coachingLine(run) {
+export function coachingLine(run, ventMode = 'lift') {
   const t = run.tel;
   const avgVent = t.ventHeatN ? t.ventHeatSum / t.ventHeatN : 0;
 
@@ -175,7 +180,13 @@ export function coachingLine(run) {
     return `PEAKED AT ${Math.round(t.peakHeat)} HEAT. ONE MORE GRAZE AND YOU IGNITE.`;
   if (run.flashCount === 0) return 'NO FLASHOVER. HUG THE BULLETS — THEY ARE THE FUEL.';
   if (run.flashCount >= 3) return `${run.flashCount} FLASHOVERS. NOW TRY ${run.flashCount + 1}.`;
-  if (!run.everVented && run.time > 30) return 'YOU NEVER VENTED. LIFT YOUR THUMB AT 80+ AND SEE.';
+  if (!run.everVented && run.time > 30) {
+    // Must match the player's actual control scheme, or the game's own
+    // coaching teaches them their controls are broken.
+    return ventMode === 'secondTap'
+      ? 'YOU NEVER VENTED. TAP A SECOND FINGER AT 80+ AND SEE.'
+      : 'YOU NEVER VENTED. LIFT YOUR THUMB AT 80+ AND SEE.';
+  }
   if (run.sparkUsed) return 'SECOND SPARK SAVED YOU. IT ONLY WORKS ABOVE 85.';
   return `${run.flashCount} FLASHOVER${run.flashCount === 1 ? '' : 'S'}. NOW TRY ${run.flashCount + 1}.`;
 }

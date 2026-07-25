@@ -53,7 +53,9 @@ Nothing here is incidental, and a few decisions are worth calling out:
 
 **A pointercancel never vents.** A notification banner or a palm touch fires `pointercancel`, and a game that reads that as "the player lifted their thumb" steals runs from people. Cancels are tracked separately from releases, a vent needs a deliberate 150ms hold, and lifting by accident grants invulnerability rather than punishment.
 
-**It must be playable in silence.** The gauge, the ring, the palette and the vignette carry 100% of the heat information. Sound is reward, never information. High contrast, reduce glow, and a screenshake *scalar* (not a toggle — nausea is not binary) all ship on day one.
+**It must be playable in silence.** The gauge, the ring, the palette and the vignette carry 100% of the heat information. Sound is reward, never information. High contrast, reduce glow, and a screenshake *scalar* (not a toggle — nausea is not binary) all ship on day one. Reduce glow also flattens the ignition wash: a full-viewport luminance strobe at ~4Hz is exactly the kind of effect that needs an off switch, and it was the one thing in the game that no accessibility control reached until a review pass caught it.
+
+**The daily is the same run for everyone.** That sounds obvious and it wasn't: the new-player density assist and the first-run mercy revive both keyed off the local save, so a player who installed the game five minutes ago got a materially easier daily than a veteran — and both scores landed in the same history. Both are now exempted on the daily, and `tools/balance.mjs` fingerprints it.
 
 ## Verifying it
 

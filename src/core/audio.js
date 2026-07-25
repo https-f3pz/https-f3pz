@@ -44,10 +44,17 @@ export function unlock() {
 }
 
 export function configure(s) {
+  const wantedMusic = settings.music;
   settings = { ...settings, ...s };
   if (!ready) return;
   sfxBus.gain.setTargetAtTime(settings.sound ? 0.75 : 0, ctx.currentTime, 0.02);
   musicBus.gain.setTargetAtTime(settings.music ? musicTarget : 0, ctx.currentTime, 0.15);
+
+  // Muting the bus is not enough: the sequencer would keep building and
+  // tearing down thousands of oscillator nodes per run that nobody can hear,
+  // plus a 60ms setTimeout chain running for the whole session.
+  if (!settings.music && musicOn) stopMusic(0.15, true);
+  else if (settings.music && !wantedMusic && musicWanted) startMusic();
 }
 
 export function suspend() {
@@ -226,6 +233,9 @@ const ROOT = 55; // A1
 
 let musicTarget = 0.5;
 let musicOn = false;
+// What the game asked for, independent of whether the setting allows it —
+// so re-enabling music mid-run resumes instead of waiting for the next run.
+let musicWanted = false;
 let step = 0;
 let nextNoteTime = 0;
 let schedTimer = 0;
@@ -303,7 +313,8 @@ function scheduler() {
 }
 
 export function startMusic() {
-  if (!ready || musicOn) return;
+  musicWanted = true;
+  if (!ready || musicOn || !settings.music) return;
   musicOn = true;
   step = 0;
   nextNoteTime = ctx.currentTime + 0.08;
@@ -311,7 +322,8 @@ export function startMusic() {
   scheduler();
 }
 
-export function stopMusic(fade = 0.4) {
+export function stopMusic(fade = 0.4, keepWanted = false) {
+  if (!keepWanted) musicWanted = false;
   if (!ready) return;
   musicOn = false;
   clearTimeout(schedTimer);

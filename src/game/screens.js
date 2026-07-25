@@ -256,12 +256,12 @@ export function drawSettings(ctx, g, view, dt) {
   outlinedText(ctx, 'SETTINGS', VW / 2, top + 30, { size: 24, weight: 900, color: C.text, outlineWidth: 4, font: FONT });
 
   let y = top + 56;
-  const row = 42;
+  const row = 48; // >= MIN_TOUCH, so adjacent hit rects cannot overlap
   const W = VW - 32;
   const s = save.settings;
 
   const toggleRow = (key, label, get, set) => {
-    if (ui.toggle(ctx, input, dt, key, 16, y, W, 38, label, get(), { radius: 12 })) {
+    if (ui.toggle(ctx, input, dt, key, 16, y, W, 38, label, get(), { radius: 12, pitch: row })) {
       set(!get());
       g.applySettings();
       g.sfxConfirm();
@@ -280,6 +280,7 @@ export function drawSettings(ctx, g, view, dt) {
   const order = [1, 0.5, 0.25, 0];
   if (ui.button(ctx, input, dt, 'shake', 16, y, W, 38, 'SCREEN SHAKE', {
     align: 'left', textSize: 15, sub: shakeLabels[s.reduceShake] ?? 'FULL', radius: 12, stroke: '#6a6aa0',
+    pitch: row,
   })) {
     const i = order.indexOf(s.reduceShake);
     s.reduceShake = order[(i + 1) % order.length];
@@ -291,7 +292,7 @@ export function drawSettings(ctx, g, view, dt) {
   if (ui.button(ctx, input, dt, 'ventmode', 16, y, W, 38, 'VENT', {
     align: 'left', textSize: 15,
     sub: s.ventMode === 'lift' ? 'LIFT YOUR THUMB' : 'TAP A SECOND FINGER',
-    radius: 12, stroke: '#6a6aa0',
+    radius: 12, stroke: '#6a6aa0', pitch: row,
   })) {
     s.ventMode = s.ventMode === 'lift' ? 'secondTap' : 'lift';
     g.applySettings();
@@ -533,12 +534,22 @@ export function drawResults(ctx, g, view, dt) {
     ...res.marks.map((m) => `MARK · ${m.name}`),
     ...res.missionsDone.map((m) => `MISSION · ${m.text}`),
   ];
-  for (const r of rewards.slice(0, 3)) {
+  // Only draw what actually fits above AGAIN. These lines are the payoff for
+  // the exact run where it matters most, and they were rendering underneath
+  // the button fill where nobody would ever see them.
+  const rewardRoom = Math.max(0, Math.floor((againY - 6 - y) / 16));
+  const visibleRewards = rewards.slice(0, Math.min(3, rewardRoom));
+  for (const r of visibleRewards) {
     ctx.save();
     ctx.globalAlpha = 0.6 + 0.4 * Math.sin(t * 4);
     outlinedText(ctx, r, VW / 2, y + 8, { size: 10, weight: 800, color: C.gold, outlineWidth: 2, font: FONT });
     ctx.restore();
     y += 16;
+  }
+  if (rewards.length > visibleRewards.length && rewardRoom > 0) {
+    outlinedText(ctx, `+${rewards.length - visibleRewards.length} MORE`, VW / 2, y + 8, {
+      size: 9, weight: 800, color: C.gold, outlineWidth: 2, font: FONT,
+    });
   }
 
   // AGAIN sits under the thumb. Tap to playing in well under 400ms.
@@ -574,12 +585,16 @@ export function drawPause(ctx, g, view, dt) {
     g.resume();
   }
   if (ui.button(ctx, input, dt, 'restart', 46, cy + 6, VW - 92, 40, 'RESTART', {
-    textSize: 15, stroke: '#6a6aa0', fill: '#141230', radius: 12,
+    textSize: 15, stroke: '#6a6aa0', fill: '#141230', radius: 12, pitch: 46,
   })) {
+    // Bank the run first. RESTART used to be the only path in the game that
+    // silently threw away a best score, a mark and a core unlock, while QUIT
+    // one row below kept all three.
+    g.finishRun();
     g.beginRun({ daily: g.isDaily });
   }
   if (ui.button(ctx, input, dt, 'quit', 46, cy + 52, VW - 92, 40, 'QUIT TO MENU', {
-    textSize: 15, stroke: '#4a4570', fill: '#101024', radius: 12,
+    textSize: 15, stroke: '#4a4570', fill: '#101024', radius: 12, pitch: 46,
   })) {
     g.endRunEarly();
   }

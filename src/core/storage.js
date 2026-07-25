@@ -42,7 +42,7 @@ export function defaults() {
     marks: {},
     missions: null, // rolled on first launch
     missionSets: 0,
-    daily: { date: null, score: 0, streak: 0, history: [] },
+    daily: { date: null, score: 0, streak: 0, locked: false, history: [] },
     settings: {
       sound: true,
       music: true,
