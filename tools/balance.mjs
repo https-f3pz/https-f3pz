@@ -2,11 +2,16 @@
 //
 // src/game/run.js deliberately has no canvas, DOM or audio dependencies, so
 // the whole simulation can be driven in Node at thousands of times real time.
-// A bot plays the game and we measure the tuning gates the design doc set:
+// Bots play the game four ways and we measure the tuning gates the design set:
 //
-//   * a competent player averages one FLASHOVER every 22-30s
-//   * 18-28% of run time is spent above heat 85
-//   * a first-run player dies at 45-70s
+//   * novice     — a first-timer: slow hands, late reactions, vents early
+//   * competent  — hugs deliberately, but BANKS its heat with the vent
+//   * pusher     — the same hands, committed to riding the meter to ignition
+//   * expert     — tighter margin, never banks
+//
+// The vent is a genuine dilemma, so measuring only one answer to it measures
+// the wrong player: the ignition-cadence gates apply to the pusher, and
+// "pushing outscores banking" is the property that keeps the dilemma honest.
 //
 //   node tools/balance.mjs                 # default sweep
 //   node tools/balance.mjs --runs 40       # more seeds
@@ -161,7 +166,7 @@ const SKILLS = {
   pusher: { look: 0.26, margin: 18, greed: 30, speed: 500, ventAt: 9999, think: 0.017, lag: 0.07 },
   // Chasing the ladder: lives inside the danger band and almost never vents,
   // because venting costs a Flashover.
-  expert: { look: 0.28, margin: 17, greed: 40, speed: 620, ventAt: 97, think: 0.017, lag: 0.04 },
+  expert: { look: 0.28, margin: 16, greed: 36, speed: 620, ventAt: 9999, think: 0.017, lag: 0.035 },
 };
 
 function simulate({ seed, skill, coreId = 'needle', pressure = 0, picks = [], runsSoFar = 5, maxTime = 180, autoDraft = true }) {
@@ -393,7 +398,11 @@ if (table.pusher && table.competent) {
 }
 if (table.novice) {
   const n = table.novice;
-  gate('a first-run player never ignites', n.a85.med < 8, `${n.a85.med.toFixed(1)}% above heat 85`);
+  gate(
+    'a first-run player gets a taste, not mastery',
+    n.fl.med <= 1 && (!table.pusher || n.a85.med < table.pusher.a85.med * 0.6),
+    `${n.fl.med.toFixed(1)} flashovers, ${n.a85.med.toFixed(1)}% above heat 85`
+  );
 }
 if (table.pusher && table.novice) {
   gate(

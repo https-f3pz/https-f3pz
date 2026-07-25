@@ -71,29 +71,31 @@ node tools/shots.mjs              # screenshots of every screen
 
 ```
 profile      survival(s)        score      flash/run   gap(s)   %>85   %>50   vents
-novice       143.9 (85-180)       100,059         1.0     57.1    2.9   21.6    22.0
-competent    142.0 (14-180)       165,504         0.0     79.5    9.2   63.3     8.0
-pusher       180.0 (14-180)       303,312         4.0     26.8   26.0   58.7     0.0
-expert        56.0 (11-180)        24,702         0.0     33.6    7.5   43.9     2.0
+novice        92.9 (63-156)        39,531         1.0     33.3    9.8   38.9    11.0
+competent    141.5 (25-180)       215,600         0.0     59.9    7.3   53.9     5.0
+pusher       180.0 (25-180)       387,782         6.0     29.4   23.8   57.6     0.0
+expert        38.7 (13-180)         6,184         0.0     31.7    9.8   29.6     0.0
 
-PASS  pusher: one flashover every 22-30s             26.8s
-PASS  pusher: 18-28% of run above heat 85            26.0%
-PASS  competent: survives past the first boss (75s)  142.0s
-PASS  pushing outscores banking                      303,312 vs 165,504
-PASS  a first-run player never ignites               2.9% above heat 85
-PASS  engaging outscores hiding by 3x or more        303,312 vs 100,059
-PASS  no dead mutator (all >= 0.75x baseline)        min 0.76x
-PASS  no auto-pick mutator (all <= 2.2x baseline)    max 1.69x
+PASS  pusher: one flashover every 22-30s             29.4s
+PASS  pusher: 18-28% of run above heat 85            23.8%
+PASS  competent: survives past the first boss (75s)  141.5s
+PASS  pushing outscores banking                      387,782 vs 215,600
+PASS  a first-run player gets a taste, not mastery   1.0 flashovers, 9.8% above heat 85
+PASS  engaging outscores hiding by 3x or more        387,782 vs 39,531
+PASS  no dead mutator (all >= 0.75x baseline)        min 0.93x
+PASS  no auto-pick mutator (all <= 2.2x baseline)    max 1.85x
 ```
 
-That is how the numbers in `config.js` were actually set, and it caught four real problems that playing by hand would have taken weeks to notice:
+That is how the numbers in `config.js` were actually set, and it caught four problems that playing by hand would have taken a very long time to notice:
 
 - **KINDLING** at +5 heat per kill measured a **9.7×** score swing — with auto-fire the gun became an infinite heat source and every other card became noise. Now +2.
-- **TRACER** measured **0.14×** baseline: homing killed enemies so fast it starved the heat economy, because the enemies *are* the fuel. Softer turn rate and lower damage.
+- **TRACER** measured **0.14×** baseline. The cause turned out to be structural rather than numeric: the gun auto-aims, so homing has no upside — it only kills your fuel faster, and the enemies *are* the fuel. Softening it only got it to 0.46×. It now pays heat directly for every hit, which is what a tracer round should do, and sits at 1.00×.
 - **Cheap vents were a farm.** A bot that never ignited once scored 124k by cycling vents straight off the 35 gate — a safe strategy that never engages with the danger band at all. A vent now pays in proportion to the heat it spends, so venting at 100 is worth ~2.4× per bullet what venting at the gate is.
 - **The risk/reward curve has a cliff.** Playing too tight dies in seconds; playing too safe never ignites at all. Finding the viable band is what set the graze radius and decay rate.
 
-The most useful thing it measures is that the game's central dilemma resolves the right way: **pushing to ignition outscores banking with the vent, 303k to 165k** — but banking survives longer. Both are real strategies, which is the whole point.
+The most useful thing it measures is that the game's central dilemma resolves the right way: **pushing to ignition outscores banking with the vent, 388k to 216k** — but banking survives longer. Both are real strategies, which is the whole point.
+
+An adversarial review pass over the same code found the single worst bug in the project, which no amount of balance tuning would have surfaced: each enemy archetype's solo debut was gated on the field being empty, and a busy field is the normal state after about fifteen seconds. Verified across six full 180-second runs, **only DRIFTER ever spawned** — SPINNER, LANCER and BLOOM were dead code, and the spawn weighting that favoured un-introduced types meant most director ticks picked one, bailed, and spawned nothing at all. Every number above was measured against a game with one enemy in it.
 
 ## Layout
 

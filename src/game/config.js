@@ -166,11 +166,12 @@ export const MUTATORS = [
     apply: (s) => { s.cinder = true; },
   },
   {
-    // Measured at 0.14x baseline with hard homing and full damage: it cleared
-    // the screen so fast it starved the heat economy, because the enemies ARE
-    // the fuel. Softer turn, lower damage — coverage without a clear-out.
-    id: 'tracer', name: 'TRACER', blurb: 'SHOTS HOME', num: 'DAMAGE -30%',
-    apply: (s) => { s.homing = 200; s.damageMult *= 0.7; },
+    // Homing alone measured 0.14x, then 0.46x baseline. The problem is
+    // structural: the gun auto-aims, so homing has no upside — it only kills
+    // your fuel faster, and the enemies ARE the fuel. So the card now pays
+    // heat directly for every hit, which is what a tracer round should do.
+    id: 'tracer', name: 'TRACER', blurb: 'SHOTS HOME · HITS HEAT', num: '+0.3 HEAT / HIT',
+    apply: (s) => { s.homing = 200; s.damageMult *= 0.7; s.heatPerHit += 0.3; },
   },
   {
     id: 'afterburn', name: 'AFTERBURN', blurb: 'FLASHOVER 4s → 6s', num: 'NO VENT I-FRAMES',
@@ -252,6 +253,7 @@ export function baseStats() {
     decayGrace: HEAT.decayGrace,
     multStep: 10,
     heatPerKill: 0,
+    heatPerHit: 0,
     startHeat: 0,
     flashAt: HEAT.flashAt,
     flashBody: HEAT.flashBody,

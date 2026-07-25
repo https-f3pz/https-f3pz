@@ -593,7 +593,7 @@ export class Run {
         if (b.hits.includes(e)) continue;
         const d = sweptMinDist(b.px, b.py, b.x, b.y, e.px, e.py, e.x, e.y);
         if (d <= e.r + 2) {
-          this.damageEnemy(e, b.dmg, j);
+          this.damageEnemy(e, b.dmg, j, true);
           if (b.pierce > 0) {
             b.pierce--;
             b.hits.push(e);
@@ -607,8 +607,11 @@ export class Run {
     }
   }
 
-  damageEnemy(e, dmg, index) {
+  damageEnemy(e, dmg, index, fromBullet = false) {
     if (e.hp <= 0) return; // already dead this frame; never kill it twice
+    if (fromBullet && this.s.heatPerHit) {
+      this.heat = Math.min(this.s.flashAt, this.heat + this.s.heatPerHit);
+    }
     e.hp -= dmg;
     e.flash = 0.09;
     if (e.hp > 0) return;
