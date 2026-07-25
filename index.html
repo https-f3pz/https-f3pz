@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FLASHOVER</title>
+
+<!-- viewport-fit=cover lets the canvas run under the notch; the game reads the
+     safe-area insets back out of CSS and keeps the HUD clear of them. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="description" content="A one-thumb bullet-hell where enemy fire is your fuel. Fully offline, installable, no ads, no accounts.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#07060f">
+
+<!-- iOS home-screen behaviour -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Flashover">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <!-- The whole game renders here. No DOM UI: one surface means one set of
+       layout rules and no chance of HTML controls eating a touch. -->
+  <canvas id="game" aria-label="Flashover game screen" role="img"></canvas>
+
+  <!-- Shown until the first frame paints, then removed. Also the only thing a
+       browser without JS modules will ever see. -->
+  <div id="boot">
+    <div class="boot-mark"></div>
+    <div class="boot-text">FLASHOVER</div>
+    <noscript class="boot-note">This game needs JavaScript.</noscript>
+  </div>
+
+  <!-- Reads the safe-area insets so JS can query them via getComputedStyle. -->
+  <div id="safe-probe" aria-hidden="true"></div>
+
+  <script type="module" src="./src/main.js"></script>
+  <script>
+    // Registered from a classic script so a module parse error in the game
+    // still leaves the app installable and offline-capable.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => {
+          /* file:// or an unsupported browser — the game runs, it just won't
+             install for offline use */
+        });
+      });
+    }
+  </script>
+</body>
+</html>

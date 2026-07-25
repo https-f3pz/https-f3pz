@@ -1,0 +1,23 @@
+{
+  "name": "Flashover",
+  "short_name": "Flashover",
+  "description": "A one-thumb bullet-hell where enemy fire is your fuel. Fully offline, installable, no ads, no accounts.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "flashover",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "portrait",
+  "background_color": "#07060f",
+  "theme_color": "#07060f",
+  "categories": ["games", "entertainment"],
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./icons/favicon-64.png", "sizes": "64x64", "type": "image/png", "purpose": "any" }
+  ]
+}
