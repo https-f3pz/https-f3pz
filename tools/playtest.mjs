@@ -162,10 +162,18 @@ async function main() {
   if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '01-menu.png') });
 
   // ------------------------------------------------------------ start run
-  await tap(page, 195, 745); // PLAY sits under the thumb, near the bottom
+  // Ask the game where DIVE actually is rather than hardcoding a pixel: the
+  // button has moved twice already and a stale constant fails as a silent
+  // "the game never started".
+  const diveAt = await page.evaluate(() => {
+    const v = window.__GAME__.game.view;
+    const playY = v.vh - v.insetBottom - 76 - 16 - 104;
+    return { x: v.ox + (720 / 2) * v.scale, y: v.oy + (playY + 52) * v.scale };
+  });
+  await tap(page, diveAt.x, diveAt.y);
   await page.waitForTimeout(400);
   let state = await page.evaluate(() => window.__GAME__?.state);
-  check('tap starts a run', state === 'play' || state === 'intro', `state=${state}`);
+  check('tap starts a dive', state === 'play', `state=${state}`);
 
   // -------------------------------------------------------- play a while
   // Drive it like a real thumb: alternating holds and taps across the screen.
@@ -177,7 +185,7 @@ async function main() {
   if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '02-play.png') });
 
   const mid = await page.evaluate(() => window.__GAME__?.debugSnapshot?.());
-  check('run advances (time and score move)', !!mid && mid.runTime > 1, JSON.stringify(mid || {}).slice(0, 160));
+  check('dive advances (time and depth move)', !!mid && mid.runTime > 1, JSON.stringify(mid || {}).slice(0, 160));
 
   // ------------------------------------------------------- frame budget
   const perf = await page.evaluate(
@@ -211,11 +219,11 @@ async function main() {
     await new Promise((r) => setTimeout(r, 2200));
     return window.__GAME__?.state;
   });
-  check('run can end and reach a result screen', ended === 'over' || ended === 'summary', `state=${ended}`);
+  check('dive can end and reach a result screen', ended === 'over' || ended === 'summary', `state=${ended}`);
   if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '03-gameover.png') });
 
   const persisted = await page.evaluate(() => {
-    const raw = localStorage.getItem('flashover.v1');
+    const raw = localStorage.getItem('hookfall.v1');
     return raw ? JSON.parse(raw) : null;
   });
   check('progress persists to localStorage', !!persisted && persisted.runs >= 1, `runs=${persisted?.runs}`);
@@ -230,10 +238,10 @@ async function main() {
 
     const v = g.view;
     const toDevice = (lx, ly) => ({ x: lx * v.scale + v.ox, y: ly * v.scale + v.oy });
-    // Layout mirrors drawSettings: rows start at insetTop+56, pitch 48, h 38.
-    const row0 = v.insetTop + 56;
-    const pitch = 48;
-    const h = 38;
+    // Layout mirrors drawSettings: rows start at insetTop+110, pitch 92, h 74.
+    const row0 = v.insetTop + 110;
+    const pitch = 92;
+    const h = 74;
     return {
       gap: toDevice(180, row0 + h + (pitch - h) / 2), // dead centre of the gap
       rowA: toDevice(180, row0 + h / 2),

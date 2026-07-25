@@ -1,7 +1,7 @@
 // Generates the PWA icon set.
 //
 // The game draws all of its art procedurally, and so do its icons: this script
-// renders the same vessel mark on a Canvas in headless Chromium and writes
+// renders the same hook-and-rope mark on a Canvas in headless Chromium and writes
 // real PNGs. That keeps the repo free of binary art nobody can edit, while
 // still giving Android and iOS the raster files their installers require.
 //
@@ -34,18 +34,14 @@ function drawIcon(size, inset, bleed) {
   const x = c.getContext('2d');
   const S = size;
 
+  const bg = x.createLinearGradient(0, 0, 0, S);
+  bg.addColorStop(0, '#16203a');
+  bg.addColorStop(1, '#080c18');
   if (bleed) {
-    // Maskable icons must fill the full square — no transparent corners.
-    const bg = x.createLinearGradient(0, 0, S, S);
-    bg.addColorStop(0, '#100a2c');
-    bg.addColorStop(1, '#05040d');
     x.fillStyle = bg;
     x.fillRect(0, 0, S, S);
   } else {
     const r = S * 0.22;
-    const bg = x.createLinearGradient(0, 0, S, S);
-    bg.addColorStop(0, '#151038');
-    bg.addColorStop(1, '#05040d');
     x.fillStyle = bg;
     x.beginPath();
     x.moveTo(r, 0);
@@ -61,58 +57,67 @@ function drawIcon(size, inset, bleed) {
     x.fill();
   }
 
-  // Glow behind the mark.
-  const glow = x.createRadialGradient(S / 2, S * 0.5, 0, S / 2, S * 0.5, S * 0.5);
-  glow.addColorStop(0, 'rgba(109,242,255,0.42)');
-  glow.addColorStop(0.55, 'rgba(178,107,255,0.16)');
-  glow.addColorStop(1, 'rgba(0,0,0,0)');
-  x.fillStyle = glow;
-  x.fillRect(0, 0, S, S);
-
   const k = (1 - inset * 2) * S;
   const cx = S / 2;
   const cy = S / 2;
-  const w = k * 0.34;
-  const h = k * 0.46;
 
-  // The crystal: the player's vessel, same silhouette the game draws.
+  // The shaft: two jagged walls closing toward the bottom.
   x.save();
   x.translate(cx, cy);
-  const face = x.createLinearGradient(-w, -h, w, h);
-  face.addColorStop(0, '#8ef6ff');
-  face.addColorStop(0.45, '#b26bff');
-  face.addColorStop(1, '#ff5fa8');
-  x.fillStyle = face;
+  x.fillStyle = '#04060e';
+  const gap = k * 0.30;
   x.beginPath();
-  x.moveTo(0, -h);
-  x.lineTo(w, -h * 0.18);
-  x.lineTo(w * 0.56, h);
-  x.lineTo(-w * 0.56, h);
-  x.lineTo(-w, -h * 0.18);
+  x.moveTo(-S, -S);
+  x.lineTo(-gap * 1.15, -k * 0.5);
+  x.lineTo(-gap * 0.72, 0);
+  x.lineTo(-gap * 1.0, k * 0.5);
+  x.lineTo(-S, S);
+  x.closePath();
+  x.fill();
+  x.beginPath();
+  x.moveTo(S, -S);
+  x.lineTo(gap * 1.0, -k * 0.5);
+  x.lineTo(gap * 0.70, 0);
+  x.lineTo(gap * 1.15, k * 0.5);
+  x.lineTo(S, S);
   x.closePath();
   x.fill();
 
-  // Inner facet lines give it depth at 48px as well as 512px.
-  x.strokeStyle = 'rgba(255,255,255,0.55)';
-  x.lineWidth = Math.max(1, S * 0.012);
-  x.lineJoin = 'round';
+  // Anchor ring, rope, and the diver mid-swing — the whole game in one shape.
+  const ax = -gap * 0.55;
+  const ay = -k * 0.30;
+  const dx = gap * 0.42;
+  const dy = k * 0.24;
+
+  x.strokeStyle = '#57e0ff';
+  x.lineWidth = Math.max(2, S * 0.030);
+  x.lineCap = 'round';
+  x.globalAlpha = 0.28;
+  x.lineWidth = Math.max(4, S * 0.075);
   x.beginPath();
-  x.moveTo(0, -h);
-  x.lineTo(0, h);
-  x.moveTo(-w, -h * 0.18);
-  x.lineTo(w, -h * 0.18);
+  x.moveTo(ax, ay);
+  x.lineTo(dx, dy);
+  x.stroke();
+  x.globalAlpha = 1;
+  x.lineWidth = Math.max(2, S * 0.028);
+  x.beginPath();
+  x.moveTo(ax, ay);
+  x.lineTo(dx, dy);
   x.stroke();
 
-  x.strokeStyle = 'rgba(255,255,255,0.9)';
-  x.lineWidth = Math.max(1, S * 0.016);
+  x.lineWidth = Math.max(2, S * 0.036);
   x.beginPath();
-  x.moveTo(0, -h);
-  x.lineTo(w, -h * 0.18);
-  x.lineTo(w * 0.56, h);
-  x.lineTo(-w * 0.56, h);
-  x.lineTo(-w, -h * 0.18);
-  x.closePath();
+  x.arc(ax, ay, k * 0.10, 0, Math.PI * 2);
   x.stroke();
+
+  x.save();
+  x.translate(dx, dy);
+  x.rotate(Math.atan2(dy - ay, dx - ax) + Math.PI / 2);
+  x.fillStyle = '#ffffff';
+  x.beginPath();
+  x.ellipse(0, 0, k * 0.055, k * 0.11, 0, 0, Math.PI * 2);
+  x.fill();
+  x.restore();
   x.restore();
 
   return c.toDataURL('image/png');

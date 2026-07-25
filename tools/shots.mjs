@@ -1,10 +1,10 @@
-// Captures screenshots of every screen for visual review.
+// Screenshots of every screen, for visual review.
 //
-//   node tools/shots.mjs            # writes .playtest/*.png
+//   node tools/shots.mjs        # writes .playtest/*.png
 //
-// Drives the game through window.__GAME__ so it can force a mid-run state
-// with real enemies and bullets on screen, rather than photographing an empty
-// arena a second after the run starts.
+// Drives the game through window.__GAME__ and flies it with a simple
+// hook-swing-release autopilot, so the mid-dive shots show a real rope under
+// real tension rather than a diver in freefall.
 
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -50,6 +50,40 @@ function serve(root) {
   return new Promise((ok) => server.listen(0, '127.0.0.1', () => ok({ server, port: server.address().port })));
 }
 
+// Flies the dive forward for `seconds`, hooking and releasing on a rhythm.
+// Runs inside the page so it drives the real simulation.
+const AUTOPILOT = (seconds, invincible) => {
+  const g = window.__GAME__.game;
+  const run = g.run;
+  const STEP = 1 / 120;
+  let hookT = 0;
+  for (let i = 0; i < 120 * seconds; i++) {
+    if (invincible) {
+      // Survive for the photo without deleting the hazards — they are most of
+      // what the screenshot is meant to show.
+      run.god = true;
+      run.collapseY = Math.min(run.collapseY, run.y - 1500);
+    }
+    hookT += STEP;
+    if (run.hook === 0 && hookT > 0.55) {
+      run.selectTarget(run.x);
+      if (run.target) {
+        run.fire(run.x);
+        hookT = 0;
+      }
+    } else if (run.hook === 2 && hookT > 0.42) {
+      run.release();
+      hookT = 0;
+    }
+    run.update(STEP, null);
+    run.updateTrail(STEP);
+    run.events.length = 0;
+    if (run.dead) break;
+  }
+  run.selectTarget(run.x);
+  run.predictArc();
+};
+
 const { chromium } = loadPlaywright();
 const { server, port } = await serve(ROOT);
 const base = `http://127.0.0.1:${port}/`;
@@ -66,18 +100,15 @@ const page = await ctx.newPage();
 page.on('pageerror', (e) => console.error('PAGE ERROR:', e.message));
 page.on('console', (m) => m.type() === 'error' && console.error('CONSOLE:', m.text()));
 
-// Seed a save BEFORE any page script runs. Setting it after load and then
-// reloading does not work: the game persists on pagehide, so its own (empty)
-// save overwrites the seed on the way out.
+// Seeded before any page script runs — the game persists on pagehide, so
+// setting it after load and reloading would be overwritten on the way out.
 await ctx.addInitScript(() => {
-  localStorage.setItem('flashover.v1', JSON.stringify({
-    v: 1, best: 148200, bestTime: 132, runs: 37, totalFlashovers: 61,
-    timeAboveHeat50: 1840,
-    scores20: [3200, 8100, 12000, 9000, 22000, 31000, 28000, 44000, 51000, 39000,
-      62000, 71000, 68000, 90000, 84000, 101000, 96000, 118000, 132000, 148200],
-    cores: { needle: { best: 148200, bestTime: 132, bestPressure: 3 }, ember: { best: 0 }, bulwark: { best: 0 } },
-    core: 'needle', pressure: 2, unlockedCores: ['needle', 'ember', 'bulwark'],
-    marks: { furnace: true, redline: true, ironclad: true },
+  localStorage.setItem('hookfall.v1', JSON.stringify({
+    v: 1, best: 6420, bestScore: 184000, bestCombo: 27, runs: 48,
+    totalDepth: 96000, gems: 210, shards: 2400,
+    upgrades: { reach: 2, snap: 1, winch: 3, wax: 1 },
+    depths20: [220, 480, 610, 900, 1250, 1180, 1700, 2100, 1950, 2600,
+      3100, 2900, 3600, 4200, 3900, 4800, 5200, 5000, 5900, 6420],
   }));
 });
 
@@ -85,84 +116,49 @@ await page.goto(base, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1000);
 await page.screenshot({ path: join(OUT, '01-title.png') });
 
-await page.evaluate(() => window.__GAME__.game.screen = 'settings');
+await page.evaluate(() => { window.__GAME__.game.screen = 'hook'; });
 await page.waitForTimeout(400);
-await page.screenshot({ path: join(OUT, '02-settings.png') });
+await page.screenshot({ path: join(OUT, '02-hook.png') });
 
-// Start a run and fast-forward the simulation so the screen is actually full.
-await page.evaluate(async () => {
-  const g = window.__GAME__.game;
-  g.screen = 'title';
-  g.beginRun({ daily: false });
-  g.draftIndex = 4; // no draft interrupting this capture
-  const run = g.run;
-  // Drive the simulation forward directly, steering the ship along a lazy
-  // orbit so it grazes and builds heat.
-  const STEP = 1 / 120;
-  for (let i = 0; i < 120 * 40; i++) {
-    run.iframes = 9e9; // screenshots need a live ship, not a corpse
-    const t = run.time;
-    const tx = 180 + Math.sin(t * 1.1) * 90;
-    const ty = run.shipMaxY - 40 + Math.cos(t * 0.8) * 60;
-    run.anchorTouch = { x: 0, y: 0 };
-    run.anchorShip = { x: run.x, y: run.y };
-    run.update(STEP, { x: (tx - run.x) / 1.55, y: (ty - run.y) / 1.55 });
-    run.events.length = 0;
-    if (run.dead) break;
-  }
-  run.heat = 92;
-  run.iframes = 9e9;
-  run.displayScore = run.score;
-});
-await page.waitForTimeout(500);
-await page.screenshot({ path: join(OUT, '03-play.png') });
+await page.evaluate(() => { window.__GAME__.game.screen = 'settings'; });
+await page.waitForTimeout(400);
+await page.screenshot({ path: join(OUT, '03-settings.png') });
 
-// Ignition.
-await page.evaluate(() => {
-  const run = window.__GAME__.game.run;
-  run.heat = run.s.flashAt;
-  run.flashLock = 0;
-});
-await page.waitForTimeout(450);
-await page.screenshot({ path: join(OUT, '04-flashover.png') });
+// Runs a fresh dive forward with the autopilot, then screenshots it.
+async function shotDive(name, seconds, tweak = null) {
+  await page.evaluate(
+    ({ secs, src, tw }) => {
+      const g = window.__GAME__.game;
+      g.screen = 'title';
+      g.beginRun({ daily: false });
+      if (tw) new Function('run', tw)(g.run);
+      new Function('seconds', 'invincible', `return (${src})(seconds, invincible)`)(secs, true);
+    },
+    { secs: seconds, src: AUTOPILOT.toString(), tw: tweak }
+  );
+  await page.waitForTimeout(420);
+  await page.screenshot({ path: join(OUT, name) });
+}
 
-// Draft.
-await page.evaluate(() => { window.__GAME__.game.draftIndex = 0; window.__GAME__.game.openDraft(); });
-await page.waitForTimeout(500);
-await page.screenshot({ path: join(OUT, '05-draft.png') });
+// Early dive: THE MOUTH, rope under tension.
+await shotDive('04-dive-mouth.png', 9);
+
+// Deep dive: start the diver already inside a later biome so the palette,
+// hazards and speed all reflect a real run rather than the first nine seconds.
+await shotDive('05-dive-vein.png', 7, 'run.y = 2900 * 20; run.vy = 1900; run.collapseY = run.y - 1500; run.world.ensure(run.y - 1600, run.y + 3600);');
+await shotDive('06-dive-hum.png', 7, 'run.y = 8200 * 20; run.vy = 2300; run.collapseY = run.y - 1200; run.world.ensure(run.y - 1600, run.y + 3600);');
+
+// A chain running, for the HUD.
+await shotDive('07-chain.png', 6, 'run.y = 5200 * 20; run.vy = 2100; run.combo = 18; run.comboT = 2.4; run.collapseY = run.y - 900; run.world.ensure(run.y - 1600, run.y + 3600);');
 
 // Results.
-await page.evaluate(async () => {
+await page.evaluate(() => {
   const g = window.__GAME__.game;
   g.screen = 'play';
   g.run.killNow();
 });
-await page.waitForTimeout(2600);
-await page.screenshot({ path: join(OUT, '06-results.png') });
-
-// High contrast, to prove the accessibility mode is actually playable.
-await page.evaluate(() => {
-  const g = window.__GAME__.game;
-  g.save.settings.highContrast = true;
-  g.applySettings();
-  g.beginRun({ daily: false });
-  g.draftIndex = 4;
-  const run = g.run;
-  const STEP = 1 / 120;
-  for (let i = 0; i < 120 * 35; i++) {
-    run.iframes = 9e9;
-    const t = run.time;
-    const tx = 180 + Math.sin(t * 1.1) * 90;
-    const ty = run.shipMaxY - 40 + Math.cos(t * 0.8) * 60;
-    run.anchorTouch = { x: 0, y: 0 };
-    run.anchorShip = { x: run.x, y: run.y };
-    run.update(STEP, { x: (tx - run.x) / 1.55, y: (ty - run.y) / 1.55 });
-    run.events.length = 0;
-    if (run.dead) break;
-  }
-});
-await page.waitForTimeout(500);
-await page.screenshot({ path: join(OUT, '07-high-contrast.png') });
+await page.waitForTimeout(2200);
+await page.screenshot({ path: join(OUT, '08-results.png') });
 
 console.log(`wrote screenshots to ${OUT}`);
 await browser.close();

@@ -1,247 +1,288 @@
-// Every non-gameplay screen, drawn on the same canvas as the game.
-//
-// Layout is written against the 360-wide logical space and a worst case of
-// 560 logical pixels tall, so nothing is ever pushed off a small phone.
+// Every non-dive screen, drawn on the same canvas as the game.
+// Coordinates are the 720-wide virtual space; game.js scales it to the device.
 
-import { VW, C, CORES, MARKS, PRESSURE, MUTATORS } from './config.js';
-import { outlinedText, roundRect, polygon, star, withAlpha, clamp, lerp, ease } from '../core/draw.js';
+import { VW, UPGRADES, BIOMES, PX_PER_M } from './config.js';
+import { outlinedText, roundRect, polygon, withAlpha, clamp, ease } from '../core/draw.js';
 import { panel, meter } from '../core/widgets.js';
-import { rank, nextRank, coachingLine, ensureMissions, coreUnlocked, pressureUnlocked, todayKey } from './meta.js';
-import { heatColor } from './render.js';
+import {
+  rank, RANKS, ensureMissions, upgradeTier, upgradeCost, todayKey,
+} from './meta.js';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 const TAU = Math.PI * 2;
 
-function bg(ctx, view, t) {
-  ctx.fillStyle = C.ink;
+function bg(ctx, view, t, pal) {
+  const g = ctx.createLinearGradient(0, 0, 0, view.vh);
+  g.addColorStop(0, pal.bgTop);
+  g.addColorStop(1, pal.bgBottom);
+  ctx.fillStyle = g;
   ctx.fillRect(0, 0, VW, view.vh);
-  const scroll = (t * 90) % 44;
+
+  // A slow drift of the same rock silhouettes, so the menu feels like it is
+  // hanging in the same shaft you are about to dive.
   ctx.save();
-  ctx.strokeStyle = 'rgba(90,140,200,0.10)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let y = -44 + scroll; y < view.vh; y += 44) {
-    ctx.moveTo(0, Math.round(y) + 0.5);
-    ctx.lineTo(VW, Math.round(y) + 0.5);
+  ctx.globalAlpha = 0.5;
+  ctx.fillStyle = pal.rock;
+  const scroll = (t * 26) % 300;
+  for (let i = -1; i < view.vh / 300 + 2; i++) {
+    const y = i * 300 + scroll;
+    const w = 90 + Math.sin(i * 2.3) * 55;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y + 150);
+    ctx.lineTo(0, y + 300);
+    ctx.closePath();
+    ctx.fill();
+    const w2 = 90 + Math.cos(i * 1.7) * 55;
+    ctx.beginPath();
+    ctx.moveTo(VW, y + 60);
+    ctx.lineTo(VW - w2, y + 210);
+    ctx.lineTo(VW, y + 360);
+    ctx.closePath();
+    ctx.fill();
   }
-  for (let x = 0; x <= VW; x += 44) {
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, view.vh);
-  }
-  ctx.stroke();
   ctx.restore();
 }
 
-// The rank sigil: a procedural mark that visibly grows with the player.
 function sigil(ctx, x, y, r, tier, t, color) {
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(t * 6 * (Math.PI / 180));
+  ctx.rotate(t * 0.35);
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 3;
   polygon(ctx, 0, 0, r, 6, 0);
   ctx.stroke();
-  ctx.globalAlpha = 0.5;
-  polygon(ctx, 0, 0, r * 0.72, 6, Math.PI / 6);
+  ctx.globalAlpha = 0.45;
+  polygon(ctx, 0, 0, r * 0.68, 6, Math.PI / 6);
   ctx.stroke();
   ctx.globalAlpha = 1;
-  // One point per rank tier earned.
   for (let i = 0; i <= tier; i++) {
-    const a = (i / 7) * TAU - Math.PI / 2;
+    const a = (i / RANKS.length) * TAU - Math.PI / 2;
     ctx.beginPath();
-    ctx.arc(Math.cos(a) * r, Math.sin(a) * r, 2.6, 0, TAU);
+    ctx.arc(Math.cos(a) * r, Math.sin(a) * r, 5, 0, TAU);
     ctx.fillStyle = color;
     ctx.fill();
   }
   ctx.restore();
 }
 
+function shardChip(ctx, save, x, y) {
+  outlinedText(ctx, `◆ ${Math.floor(save.shards || 0).toLocaleString()}`, x, y, {
+    size: 22, weight: 800, color: '#FFD34F', align: 'right', outlineWidth: 3, font: FONT,
+  });
+}
+
 // ------------------------------------------------------------------- title
 
 export function drawTitle(ctx, g, view, dt) {
   const { ui, input, save, t } = g;
-  bg(ctx, view, t);
+  const pal = g.renderer.palette(0);
+  bg(ctx, view, t, pal);
 
   const top = view.insetTop;
   const bottom = view.vh - view.insetBottom;
   const r = rank(save.best);
-  const nr = nextRank(save.best);
-  const tier = Math.max(0, ['D', 'C', 'B', 'A', 'S', 'SS', 'SSS'].indexOf(r.name));
+  const tier = Math.max(0, RANKS.indexOf(r));
 
-  // ---- mark + wordmark
-  sigil(ctx, VW / 2, top + 62, 30, tier, t, C.hull);
-  outlinedText(ctx, r.name, VW / 2, top + 62, { size: 20, weight: 900, color: C.gold, outlineWidth: 3, font: FONT });
-  outlinedText(ctx, 'FLASHOVER', VW / 2, top + 118, { size: 36, weight: 900, color: C.text, outlineWidth: 4, font: FONT });
-  outlinedText(ctx, 'BULLETS ARE FUEL', VW / 2, top + 142, { size: 10, weight: 700, color: C.dim, outlineWidth: 2, font: FONT });
-
-  // ---- personal best + progress toward the next rank
-  outlinedText(ctx, `BEST ${save.best.toLocaleString()}`, VW / 2, top + 168, {
-    size: 15, weight: 800, color: C.gold, outlineWidth: 3, font: FONT,
+  sigil(ctx, VW / 2, top + 96, 46, tier, t, pal.accent);
+  // Rank names are words, not letters — they go under the sigil, not inside it.
+  outlinedText(ctx, r.name, VW / 2, top + 162, {
+    size: 20, weight: 900, color: '#FFD34F', outlineWidth: 3, font: FONT,
   });
-  if (nr) {
-    const prev = r.at;
-    meter(ctx, 60, top + 180, VW - 120, 4, (save.best - prev) / (nr.at - prev), { fg: C.gold });
-    outlinedText(ctx, `${nr.name} AT ${nr.at.toLocaleString()}`, VW / 2, top + 192, {
-      size: 9, weight: 700, color: C.dim, outlineWidth: 2, font: FONT,
-    });
-  }
-
-  let y = top + 210;
-
-  // ---- core select
-  outlinedText(ctx, 'CORE', 16, y + 6, { size: 10, weight: 800, color: C.dim, align: 'left', outlineWidth: 2, font: FONT });
-  y += 16;
-  const cw = (VW - 32 - 16) / 3;
-  CORES.forEach((core, i) => {
-    const x = 16 + i * (cw + 8);
-    const unlocked = coreUnlocked(save, core);
-    const sel = save.core === core.id;
-    if (ui.button(ctx, input, dt, `core${core.id}`, x, y, cw, 46, core.name, {
-      textSize: 13,
-      sub: unlocked ? core.blurb : 'LOCKED',
-      stroke: sel ? C.hull : '#4a4570',
-      fill: sel ? '#1d2a52' : '#141230',
-      disabled: !unlocked,
-    })) {
-      save.core = core.id;
-      g.persist({ core: core.id });
-      g.sfxConfirm();
-    }
-    if (!unlocked) {
-      outlinedText(ctx, core.unlock.text, x + cw / 2, y + 58, {
-        size: 7.5, weight: 700, color: C.dim, outlineWidth: 2, font: FONT,
-      });
-    }
+  outlinedText(ctx, 'HOOKFALL', VW / 2, top + 222, {
+    size: 78, weight: 900, color: '#FFFFFF', outlineWidth: 6, font: FONT,
   });
-  y += 70;
+  outlinedText(ctx, 'KNOW WHEN TO LET GO', VW / 2, top + 264, {
+    size: 19, weight: 700, color: withAlpha('#FFFFFF', 0.45), outlineWidth: 3, font: FONT,
+  });
 
-  // ---- pressure tiers
-  const maxP = pressureUnlocked(save, save.core);
-  if (maxP > 0) {
-    outlinedText(ctx, 'PRESSURE', 16, y, { size: 10, weight: 800, color: C.dim, align: 'left', outlineWidth: 2, font: FONT });
-    const cur = Math.min(save.pressure ?? 0, maxP);
-    outlinedText(ctx, cur > 0 ? PRESSURE[cur - 1].text : 'NONE', VW - 16, y, {
-      size: 9, weight: 700, color: cur > 0 ? C.pellet : C.dim, align: 'right', outlineWidth: 2, font: FONT,
+  outlinedText(ctx, `BEST  ${Math.round(save.best || 0).toLocaleString()} m`, VW / 2, top + 312, {
+    size: 30, weight: 800, color: '#FFD34F', outlineWidth: 4, font: FONT,
+  });
+  shardChip(ctx, save, VW - 24, top + 30);
+
+  // Deepest biome reached — the "I've never seen BLACK GLASS" hook.
+  let y = top + 348;
+  const reached = BIOMES.filter((b) => (save.best || 0) >= b.at);
+  const nextB = BIOMES[reached.length];
+  if (nextB) {
+    const prev = reached[reached.length - 1];
+    outlinedText(ctx, `NEXT: ${nextB.name} AT ${nextB.at.toLocaleString()} m`, VW / 2, y, {
+      size: 17, weight: 700, color: withAlpha('#FFFFFF', 0.5), outlineWidth: 2, font: FONT,
     });
-    y += 8;
-    const pw = (VW - 32 - 5 * 5) / 6;
-    for (let i = 0; i <= 5; i++) {
-      const x = 16 + i * (pw + 5);
-      const locked = i > maxP;
-      if (ui.button(ctx, input, dt, `p${i}`, x, y, pw, 26, i === 0 ? '—' : String(i), {
-        textSize: 12,
-        stroke: cur === i ? C.pellet : '#4a4570',
-        fill: cur === i ? '#3a1030' : '#141230',
-        disabled: locked,
-        radius: 8,
-      })) {
-        save.pressure = i;
-        g.persist({ pressure: i });
-        g.sfxConfirm();
-      }
-    }
-    y += 36;
+    meter(ctx, 120, y + 16, VW - 240, 7, ((save.best || 0) - prev.at) / (nextB.at - prev.at), { fg: nextB.accent });
   } else {
-    outlinedText(ctx, 'IGNITE ONCE TO UNLOCK PRESSURE TIERS', VW / 2, y + 6, {
-      size: 9, weight: 700, color: C.dim, outlineWidth: 2, font: FONT,
+    outlinedText(ctx, 'EVERY BIOME REACHED', VW / 2, y, {
+      size: 17, weight: 700, color: '#FFD34F', outlineWidth: 2, font: FONT,
     });
-    y += 20;
   }
+  y += 52;
 
   // ---- missions
   const missions = ensureMissions(save);
-  outlinedText(ctx, 'MISSIONS', 16, y, { size: 10, weight: 800, color: C.dim, align: 'left', outlineWidth: 2, font: FONT });
-  y += 10;
+  outlinedText(ctx, 'MISSIONS', 28, y, {
+    size: 18, weight: 800, color: withAlpha('#FFFFFF', 0.45), align: 'left', outlineWidth: 2, font: FONT,
+  });
+  y += 18;
   for (const m of missions) {
-    const breathe = 0.75 + 0.25 * Math.sin(t * 0.6 * TAU + m.text.length);
     ctx.save();
-    ctx.globalAlpha = m.done ? 1 : breathe;
-    roundRect(ctx, 16, y, VW - 32, 18, 6);
+    ctx.globalAlpha = m.done ? 1 : 0.78 + 0.22 * Math.sin(t * 2 + m.text.length);
+    roundRect(ctx, 28, y, VW - 56, 36, 10);
     ctx.fillStyle = m.done ? 'rgba(255,211,79,0.14)' : 'rgba(255,255,255,0.05)';
     ctx.fill();
-    outlinedText(ctx, (m.done ? '✓ ' : '') + m.text, 24, y + 9, {
-      size: 9, weight: 700, color: m.done ? C.gold : C.dim, align: 'left', outlineWidth: 0, font: FONT,
+    outlinedText(ctx, (m.done ? '✓ ' : '') + m.text, 44, y + 18, {
+      size: 17, weight: 700, color: m.done ? '#FFD34F' : withAlpha('#FFFFFF', 0.6),
+      align: 'left', outlineWidth: 0, font: FONT,
     });
-    if (!m.done && m.prog > 0) {
-      meter(ctx, VW - 78, y + 7, 54, 4, m.prog / m.goal, { fg: C.hull });
-    }
+    if (!m.done && m.prog > 0) meter(ctx, VW - 160, y + 15, 110, 6, m.prog / m.goal, { fg: pal.accent });
     ctx.restore();
-    y += 22;
+    y += 44;
   }
 
-  // ---- primary actions, anchored to the thumb
-  const playH = 62;
-  const playY = bottom - playH - 56;
+  const playY = bottom - 76 - 16 - 104;
 
-  // ---- lifetime stats, filling the space between the missions and PLAY.
-  // These are the numbers a returning player actually wants to see.
-  if (playY - y > 96) {
-    // Absorb leftover height here rather than leaving a hole above PLAY.
-    // Tall phones get breathing room; short ones stay compact.
-    y += 8 + Math.min(46, Math.max(0, (playY - y - 150) * 0.4));
+  // ---- lifetime stats
+  if (playY - y > 160) {
+    y += 16;
     const stats = [
-      ['RUNS', String(save.runs || 0)],
-      ['FLASHOVERS', String(save.totalFlashovers || 0)],
-      ['IN THE FIRE', `${Math.round(save.timeAboveHeat50 || 0)}s`],
+      ['DIVES', String(save.runs || 0)],
+      ['GEMS', String(save.gems || 0)],
+      ['TOTAL', `${Math.round((save.totalDepth || 0) / 1000)}k m`],
     ];
-    const sw = (VW - 32 - 12) / 3;
-    stats.forEach((s, i) => {
-      const x = 16 + i * (sw + 6);
-      roundRect(ctx, x, y, sw, 36, 8);
+    const sw = (VW - 56 - 24) / 3;
+    stats.forEach((st, i) => {
+      const x = 28 + i * (sw + 12);
+      roundRect(ctx, x, y, sw, 72, 12);
       ctx.fillStyle = 'rgba(255,255,255,0.05)';
       ctx.fill();
-      outlinedText(ctx, s[1], x + sw / 2, y + 14, {
-        size: 15, weight: 900, color: C.text, outlineWidth: 0, font: FONT,
+      outlinedText(ctx, st[1], x + sw / 2, y + 28, {
+        size: 28, weight: 900, color: '#FFFFFF', outlineWidth: 0, font: FONT,
       });
-      outlinedText(ctx, s[0], x + sw / 2, y + 27, {
-        size: 7, weight: 700, color: C.dim, outlineWidth: 0, font: FONT,
+      outlinedText(ctx, st[0], x + sw / 2, y + 54, {
+        size: 13, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 0, font: FONT,
       });
     });
-    y += 46;
-
-    // Sparkline of the last twenty runs — progress you can see at a glance.
-    const hist = save.scores20 || [];
-    if (hist.length > 1 && playY - y > 52) {
-      outlinedText(ctx, 'LAST 20 RUNS', 16, y, {
-        size: 8, weight: 700, color: C.dim, align: 'left', outlineWidth: 0, font: FONT,
-      });
-      const maxS = Math.max(...hist, 1);
-      const h = Math.max(26, Math.min(104, playY - y - 26));
-      ctx.save();
-      ctx.strokeStyle = withAlpha(C.hull, 0.85);
-      ctx.lineWidth = 1.5;
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      hist.forEach((v, i) => {
-        const x = 16 + (i / (hist.length - 1)) * (VW - 32);
-        const yy = y + 8 + h - (v / maxS) * h;
-        if (i === 0) ctx.moveTo(x, yy);
-        else ctx.lineTo(x, yy);
-      });
-      ctx.stroke();
-      ctx.restore();
-    }
+    y += 88;
   }
-  if (ui.button(ctx, input, dt, 'play', 16, playY, VW - 32, playH, 'PLAY', {
-    textSize: 26, stroke: C.hull, fill: '#16224a', fillActive: '#22357a', glow: 16, radius: 18,
+
+  // ---- depth history, expanded to absorb whatever height is left
+  const hist = save.depths20 || [];
+  if (hist.length > 1 && playY - y > 90) {
+    y += 12;
+    outlinedText(ctx, 'LAST 20 DIVES', 28, y, {
+      size: 15, weight: 700, color: withAlpha('#FFFFFF', 0.35), align: 'left', outlineWidth: 0, font: FONT,
+    });
+    const h = clamp(playY - y - 44, 60, 300);
+    const maxD = Math.max(...hist, 1);
+    ctx.save();
+    ctx.strokeStyle = withAlpha(pal.accent, 0.85);
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    hist.forEach((v, i) => {
+      const x = 28 + (i / (hist.length - 1)) * (VW - 56);
+      const yy = y + 16 + h - (v / maxD) * h;
+      if (i === 0) ctx.moveTo(x, yy);
+      else ctx.lineTo(x, yy);
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---- actions
+  if (ui.button(ctx, input, dt, 'play', 32, playY, VW - 64, 104, 'DIVE', {
+    textSize: 46, stroke: pal.accent, fill: '#141d3a', fillActive: '#22336b', glow: 22, radius: 26,
   })) {
     g.beginRun({ daily: false });
   }
 
-  const dailyDone = save.daily?.date === todayKey();
-  const bw = (VW - 32 - 8) / 2;
-  if (ui.button(ctx, input, dt, 'daily', 16, bottom - 46, bw, 38, dailyDone ? 'DAILY ✓' : 'DAILY', {
-    textSize: 13,
-    sub: dailyDone ? `${save.daily.score.toLocaleString()} · ${save.daily.streak}d` : 'ONE SEED, ONE SHOT',
-    stroke: dailyDone ? C.gold : '#6a6aa0', fill: '#141230', radius: 12,
+  const bw = (VW - 64 - 24) / 3;
+  const dailyDone = save.daily?.date === todayKey() && save.daily?.locked;
+  if (ui.button(ctx, input, dt, 'daily', 32, bottom - 76, bw, 60, dailyDone ? 'DAILY ✓' : 'DAILY', {
+    textSize: 20, sub: dailyDone ? `${Math.round(save.daily.depth)} m · ${save.daily.streak}d` : 'ONE SEED',
+    stroke: dailyDone ? '#FFD34F' : '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
   })) {
     g.beginRun({ daily: true });
   }
-  if (ui.button(ctx, input, dt, 'settings', 16 + bw + 8, bottom - 46, bw, 38, 'SETTINGS', {
-    textSize: 13, sub: 'SOUND · ACCESS', stroke: '#6a6aa0', fill: '#141230', radius: 12,
+  if (ui.button(ctx, input, dt, 'hook', 32 + bw + 12, bottom - 76, bw, 60, 'HOOK', {
+    textSize: 20, sub: 'UPGRADES', stroke: '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
+  })) {
+    g.screen = 'hook';
+    g.sfxConfirm();
+  }
+  if (ui.button(ctx, input, dt, 'settings', 32 + (bw + 12) * 2, bottom - 76, bw, 60, 'SETTINGS', {
+    textSize: 20, sub: 'SOUND', stroke: '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
   })) {
     g.screen = 'settings';
     g.sfxConfirm();
+  }
+}
+
+// -------------------------------------------------------------- hook shop
+
+export function drawHook(ctx, g, view, dt) {
+  const { ui, input, save, t } = g;
+  const pal = g.renderer.palette(0);
+  bg(ctx, view, t, pal);
+  const top = view.insetTop;
+  const bottom = view.vh - view.insetBottom;
+
+  outlinedText(ctx, 'THE HOOK', VW / 2, top + 54, {
+    size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT,
+  });
+  outlinedText(ctx, 'UPGRADES CHANGE YOUR STYLE, NOT YOUR CEILING', VW / 2, top + 90, {
+    size: 15, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 2, font: FONT,
+  });
+  shardChip(ctx, save, VW - 24, top + 30);
+
+  let y = top + 128;
+  for (const u of UPGRADES) {
+    const tier = upgradeTier(save, u.id);
+    const cost = upgradeCost(save, u.id);
+    const maxed = cost == null;
+    const afford = !maxed && (save.shards || 0) >= cost;
+
+    roundRect(ctx, 28, y, VW - 56, 108, 16);
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fill();
+
+    outlinedText(ctx, u.name, 48, y + 30, {
+      size: 26, weight: 900, color: '#FFFFFF', align: 'left', outlineWidth: 0, font: FONT,
+    });
+    outlinedText(ctx, u.blurb, 48, y + 56, {
+      size: 16, weight: 700, color: withAlpha('#FFFFFF', 0.45), align: 'left', outlineWidth: 0, font: FONT,
+    });
+    outlinedText(ctx, u.unit(tier), 48, y + 84, {
+      size: 20, weight: 800, color: pal.accent, align: 'left', outlineWidth: 0, font: FONT,
+    });
+
+    // Tier pips.
+    for (let i = 0; i < 5; i++) {
+      const px = 300 + i * 26;
+      roundRect(ctx, px, y + 74, 18, 14, 4);
+      ctx.fillStyle = i < tier ? pal.accent : 'rgba(255,255,255,0.14)';
+      ctx.fill();
+    }
+
+    if (ui.button(ctx, input, dt, `buy${u.id}`, VW - 214, y + 22, 166, 64,
+      maxed ? 'MAX' : `◆ ${cost}`, {
+        textSize: 24,
+        stroke: maxed ? '#4a4570' : afford ? '#FFD34F' : '#4a4570',
+        fill: afford ? '#3a2f10' : '#12142a',
+        disabled: maxed || !afford,
+        radius: 14,
+        pitch: 64,
+      })) {
+      if (g.buy(u.id)) g.sfxConfirm();
+    }
+    y += 120;
+  }
+
+  if (ui.button(ctx, input, dt, 'hookback', 32, bottom - 84, VW - 64, 72, 'BACK', {
+    textSize: 30, stroke: pal.accent, fill: '#141d3a', radius: 18,
+  })) {
+    g.screen = 'title';
+    g.sfxBack();
   }
 }
 
@@ -249,19 +290,22 @@ export function drawTitle(ctx, g, view, dt) {
 
 export function drawSettings(ctx, g, view, dt) {
   const { ui, input, save, t } = g;
-  bg(ctx, view, t);
+  const pal = g.renderer.palette(0);
+  bg(ctx, view, t, pal);
   const top = view.insetTop;
   const bottom = view.vh - view.insetBottom;
 
-  outlinedText(ctx, 'SETTINGS', VW / 2, top + 30, { size: 24, weight: 900, color: C.text, outlineWidth: 4, font: FONT });
+  outlinedText(ctx, 'SETTINGS', VW / 2, top + 54, {
+    size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT,
+  });
 
-  let y = top + 56;
-  const row = 48; // >= MIN_TOUCH, so adjacent hit rects cannot overlap
-  const W = VW - 32;
+  let y = top + 110;
+  const row = 92; // >= MIN_TOUCH so adjacent hit rects can never overlap
+  const W = VW - 56;
   const s = save.settings;
 
   const toggleRow = (key, label, get, set) => {
-    if (ui.toggle(ctx, input, dt, key, 16, y, W, 38, label, get(), { radius: 12, pitch: row })) {
+    if (ui.toggle(ctx, input, dt, key, 28, y, W, 74, label, get(), { radius: 18, pitch: row, textSize: 26 })) {
       set(!get());
       g.applySettings();
       g.sfxConfirm();
@@ -272,74 +316,37 @@ export function drawSettings(ctx, g, view, dt) {
   toggleRow('t_sound', 'SOUND', () => s.sound, (v) => (s.sound = v));
   toggleRow('t_music', 'MUSIC', () => s.music, (v) => (s.music = v));
   toggleRow('t_haptics', 'HAPTICS', () => s.haptics, (v) => (s.haptics = v));
-  toggleRow('t_glow', 'REDUCE GLOW', () => s.reduceGlow, (v) => (s.reduceGlow = v));
-  toggleRow('t_hc', 'HIGH CONTRAST', () => s.highContrast, (v) => (s.highContrast = v));
+  toggleRow('t_glow', 'REDUCE FLASHING', () => s.reduceGlow, (v) => (s.reduceGlow = v));
 
-  // Screenshake is a scalar, not a switch — nausea is not binary.
-  const shakeLabels = { 1: 'FULL', 0.5: 'HALF', 0.25: 'MINIMAL', 0: 'OFF' };
+  const labels = { 1: 'FULL', 0.5: 'HALF', 0.25: 'MINIMAL', 0: 'OFF' };
   const order = [1, 0.5, 0.25, 0];
-  if (ui.button(ctx, input, dt, 'shake', 16, y, W, 38, 'SCREEN SHAKE', {
-    align: 'left', textSize: 15, sub: shakeLabels[s.reduceShake] ?? 'FULL', radius: 12, stroke: '#6a6aa0',
-    pitch: row,
+  if (ui.button(ctx, input, dt, 'shake', 28, y, W, 74, 'SCREEN SHAKE', {
+    align: 'left', textSize: 26, sub: labels[s.reduceShake] ?? 'FULL', radius: 18, stroke: '#6a6aa0', pitch: row,
   })) {
-    const i = order.indexOf(s.reduceShake);
-    s.reduceShake = order[(i + 1) % order.length];
+    s.reduceShake = order[(order.indexOf(s.reduceShake) + 1) % order.length];
     g.applySettings();
     g.sfxConfirm();
   }
-  y += row;
+  y += row + 20;
 
-  if (ui.button(ctx, input, dt, 'ventmode', 16, y, W, 38, 'VENT', {
-    align: 'left', textSize: 15,
-    sub: s.ventMode === 'lift' ? 'LIFT YOUR THUMB' : 'TAP A SECOND FINGER',
-    radius: 12, stroke: '#6a6aa0', pitch: row,
-  })) {
-    s.ventMode = s.ventMode === 'lift' ? 'secondTap' : 'lift';
-    g.applySettings();
-    g.sfxConfirm();
-  }
-  y += row + 6;
-
-  // ---- marks earned
-  outlinedText(ctx, 'MARKS', 16, y, { size: 10, weight: 800, color: C.dim, align: 'left', outlineWidth: 2, font: FONT });
-  y += 12;
-  const per = 4;
-  MARKS.forEach((m, i) => {
-    const col = i % per;
-    const rowI = Math.floor(i / per);
-    const w = (VW - 32 - (per - 1) * 6) / per;
-    const x = 16 + col * (w + 6);
-    const yy = y + rowI * 34;
-    const got = !!save.marks[m.id];
-    roundRect(ctx, x, yy, w, 30, 8);
-    ctx.fillStyle = got ? 'rgba(255,211,79,0.16)' : 'rgba(255,255,255,0.04)';
-    ctx.fill();
-    ctx.save();
-    ctx.globalAlpha = got ? 1 : 0.3;
-    star(ctx, x + w / 2, yy + 12, 7, 3.2, 5, -Math.PI / 2 + (got ? t * 0.6 : 0));
-    ctx.fillStyle = got ? C.gold : C.dim;
-    ctx.fill();
-    ctx.restore();
-    outlinedText(ctx, m.name.split(' ')[0], x + w / 2, yy + 24, {
-      size: 6.5, weight: 800, color: got ? C.gold : C.dim, outlineWidth: 0, font: FONT,
-    });
+  outlinedText(ctx, `${save.runs || 0} DIVES · ${Math.round(save.totalDepth || 0).toLocaleString()} m TOTAL`, VW / 2, y, {
+    size: 18, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 2, font: FONT,
   });
-  y += 34 * Math.ceil(MARKS.length / per) + 4;
 
   if (g.confirmReset) {
-    if (ui.button(ctx, input, dt, 'reset2', 16, bottom - 92, VW - 32, 38, 'ERASE EVERYTHING?', {
-      textSize: 14, stroke: '#FF2D7A', fill: '#3a0e22', radius: 12,
+    if (ui.button(ctx, input, dt, 'reset2', 28, bottom - 176, W, 72, 'ERASE EVERYTHING?', {
+      textSize: 26, stroke: '#ff2020', fill: '#3a0e14', radius: 18, pitch: 84,
     })) {
       g.wipeSave();
     }
-  } else if (ui.button(ctx, input, dt, 'reset', 16, bottom - 92, VW - 32, 38, 'RESET PROGRESS', {
-    textSize: 13, stroke: '#6a3050', fill: '#1a0f1e', radius: 12,
+  } else if (ui.button(ctx, input, dt, 'reset', 28, bottom - 176, W, 72, 'RESET PROGRESS', {
+    textSize: 22, stroke: '#6a3050', fill: '#1a0f1e', radius: 18, pitch: 84,
   })) {
     g.confirmReset = true;
   }
 
-  if (ui.button(ctx, input, dt, 'back', 16, bottom - 48, VW - 32, 42, 'BACK', {
-    textSize: 18, stroke: C.hull, fill: '#16224a', radius: 14,
+  if (ui.button(ctx, input, dt, 'back', 28, bottom - 84, W, 72, 'BACK', {
+    textSize: 30, stroke: pal.accent, fill: '#141d3a', radius: 18, pitch: 84,
   })) {
     g.confirmReset = false;
     g.screen = 'title';
@@ -347,254 +354,124 @@ export function drawSettings(ctx, g, view, dt) {
   }
 }
 
-// ------------------------------------------------------------------ draft
-
-export function drawDraft(ctx, g, view, dt) {
-  const { ui, input, t } = g;
-  const bottom = view.vh - view.insetBottom;
-
-  // The field stays visible behind the cards — you choose in context.
-  ctx.save();
-  ctx.fillStyle = 'rgba(4,4,14,0.82)';
-  ctx.fillRect(0, 0, VW, view.vh);
-  ctx.restore();
-
-  const inT = clamp(g.draftT / 0.28, 0, 1);
-  const slide = (1 - ease.outCubic(inT)) * 40;
-
-  outlinedText(ctx, 'DRAFT', VW / 2, view.insetTop + 44 - slide, {
-    size: 26, weight: 900, color: C.text, outlineWidth: 4, font: FONT,
-  });
-  outlinedText(ctx, `PICK ONE · ${g.draftIndex + 1}/4`, VW / 2, view.insetTop + 66 - slide, {
-    size: 10, weight: 700, color: C.dim, outlineWidth: 2, font: FONT,
-  });
-
-  const cards = g.draftCards;
-  const cardH = 84;
-  const gap = 12;
-  const totalH = cards.length * cardH + (cards.length - 1) * gap;
-  let y = Math.max(view.insetTop + 88, (view.vh - totalH) / 2 - 10) + slide;
-
-  cards.forEach((m, i) => {
-    const owned = g.picks.includes(m.id);
-    const x = 16;
-    const w = VW - 32;
-    const pulse = 0.5 + 0.5 * Math.sin(t * 3 + i);
-
-    if (ui.button(ctx, input, dt, `card${m.id}`, x, y, w, cardH, '', {
-      fill: '#141230', fillActive: '#221a4e', stroke: heatColor(30 + i * 30), radius: 16, glow: 8 + pulse * 6,
-      disabled: owned,
-    })) {
-      g.pickMutator(m);
-    }
-
-    // Card face: icon, three words, one number. Anything that cannot be felt
-    // within four seconds of resuming was cut rather than weakened.
-    ctx.save();
-    ctx.translate(x + 40, y + cardH / 2);
-    ctx.strokeStyle = heatColor(30 + i * 30);
-    ctx.lineWidth = 2;
-    polygon(ctx, 0, 0, 17, 3 + i, t * 0.6 + i);
-    ctx.stroke();
-    ctx.globalAlpha = 0.35;
-    polygon(ctx, 0, 0, 9, 3 + i, -t * 0.9);
-    ctx.stroke();
-    ctx.restore();
-
-    outlinedText(ctx, m.name, x + 74, y + 28, {
-      size: 16, weight: 900, color: C.text, align: 'left', outlineWidth: 0, font: FONT,
-    });
-    outlinedText(ctx, m.blurb, x + 74, y + 48, {
-      size: 11, weight: 700, color: C.dim, align: 'left', outlineWidth: 0, font: FONT,
-    });
-    outlinedText(ctx, m.num, x + 74, y + 66, {
-      size: 12, weight: 900, color: heatColor(30 + i * 30), align: 'left', outlineWidth: 0, font: FONT,
-    });
-    y += cardH + gap;
-  });
-
-  if (ui.button(ctx, input, dt, 'skip', 16, bottom - 46, VW - 32, 38, 'DECLINE ALL', {
-    textSize: 13, stroke: '#4a4570', fill: '#101024', radius: 12,
-  })) {
-    g.pickMutator(null);
-  }
-}
-
-// ---------------------------------------------------------------- results
+// ----------------------------------------------------------------- results
 
 export function drawResults(ctx, g, view, dt) {
   const { ui, input, save, t, run } = g;
+  const pal = g.renderer.palette(run.depth);
   const top = view.insetTop;
   const bottom = view.vh - view.insetBottom;
   const res = g.result;
 
-  // The frozen field stays behind the card: you can see exactly what got you.
   ctx.save();
-  ctx.fillStyle = 'rgba(4,4,14,0.86)';
+  ctx.fillStyle = 'rgba(4,4,12,0.88)';
   ctx.fillRect(0, 0, VW, view.vh);
   ctx.restore();
 
-  const shown = Math.round(g.countUp);
   const isBest = res.newBest;
+  outlinedText(ctx, isBest ? 'DEEPEST YET' : run.deathCause === 'collapse' ? 'THE COLLAPSE TOOK YOU' : 'YOU HIT SOMETHING',
+    VW / 2, top + 52, {
+      size: 24, weight: 800, color: isBest ? '#FFD34F' : withAlpha('#FFFFFF', 0.5), outlineWidth: 3, font: FONT,
+    });
+  outlinedText(ctx, `${Math.round(g.countUp).toLocaleString()}`, VW / 2, top + 132, {
+    size: 92, weight: 900, color: isBest ? '#FFD34F' : '#FFFFFF', outlineWidth: 7, font: FONT,
+  });
+  outlinedText(ctx, 'METRES', VW / 2, top + 180, {
+    size: 20, weight: 800, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 3, font: FONT,
+  });
+  outlinedText(ctx, `BEST ${Math.round(save.best || 0).toLocaleString()} m`, VW / 2, top + 212, {
+    size: 20, weight: 700, color: withAlpha('#FFFFFF', 0.45), outlineWidth: 2, font: FONT,
+  });
 
-  outlinedText(ctx, isBest ? 'NEW BEST' : 'RUN OVER', VW / 2, top + 34, {
-    size: 14, weight: 800, color: isBest ? C.gold : C.dim, outlineWidth: 3, font: FONT,
-  });
-  outlinedText(ctx, shown.toLocaleString(), VW / 2, top + 76, {
-    size: 46, weight: 900, color: isBest ? C.gold : C.text, outlineWidth: 5, font: FONT,
-  });
-  outlinedText(ctx, `BEST ${save.best.toLocaleString()}`, VW / 2, top + 104, {
-    size: 11, weight: 700, color: C.dim, outlineWidth: 2, font: FONT,
-  });
-
-  // The coaching line — the actual retry driver.
-  const line = g.coach;
+  // The coaching line.
   ctx.save();
-  roundRect(ctx, 16, top + 118, VW - 32, 34, 10);
-  ctx.fillStyle = 'rgba(125,249,255,0.08)';
+  roundRect(ctx, 28, top + 240, VW - 56, 62, 16);
+  ctx.fillStyle = withAlpha(pal.accent, 0.10);
   ctx.fill();
-  outlinedText(ctx, line, VW / 2, top + 135, {
-    size: line.length > 34 ? 10 : 12, weight: 800, color: C.hull, outlineWidth: 0, font: FONT,
+  outlinedText(ctx, g.coach, VW / 2, top + 271, {
+    size: g.coach.length > 42 ? 18 : 21, weight: 800, color: pal.accent, outlineWidth: 0, font: FONT,
   });
   ctx.restore();
 
-  // Stat grid.
-  let y = top + 164;
+  // Stats.
+  let y = top + 322;
   const stats = [
-    ['TIME', `${run.time.toFixed(1)}s`],
-    ['FLASHOVERS', String(run.flashCount)],
-    ['PEAK HEAT', String(Math.round(run.tel.peakHeat))],
-    ['VENTS', String(run.ventCount)],
-    ['BEST VENT', Math.round(run.bestVent).toLocaleString()],
-    ['KILLS', String(run.tel.kills)],
+    ['SCORE', Math.round(run.score).toLocaleString()],
+    ['BEST CHAIN', String(run.bestCombo)],
+    ['WHIPCRACKS', String(run.whipcracks)],
+    ['GEMS', String(run.gems)],
+    ['TOP SPEED', `${Math.round(run.topSpeed)}`],
+    ['SHARDS', `◆ ${res.shardsEarned}`],
   ];
-  stats.forEach((s, i) => {
+  stats.forEach((st, i) => {
     const col = i % 3;
     const rowI = Math.floor(i / 3);
-    const w = (VW - 32 - 12) / 3;
-    const x = 16 + col * (w + 6);
-    const yy = y + rowI * 40;
-    roundRect(ctx, x, yy, w, 34, 8);
+    const w = (VW - 56 - 24) / 3;
+    const x = 28 + col * (w + 12);
+    const yy = y + rowI * 82;
+    roundRect(ctx, x, yy, w, 70, 12);
     ctx.fillStyle = 'rgba(255,255,255,0.05)';
     ctx.fill();
-    outlinedText(ctx, s[1], x + w / 2, yy + 13, { size: 14, weight: 900, color: C.text, outlineWidth: 0, font: FONT });
-    outlinedText(ctx, s[0], x + w / 2, yy + 26, { size: 7, weight: 700, color: C.dim, outlineWidth: 0, font: FONT });
+    outlinedText(ctx, st[1], x + w / 2, yy + 28, { size: 26, weight: 900, color: '#FFFFFF', outlineWidth: 0, font: FONT });
+    outlinedText(ctx, st[0], x + w / 2, yy + 54, { size: 13, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 0, font: FONT });
   });
-  y += 88;
+  y += 178;
 
-  // The build you took — the reason this run went the way it did.
-  const againY = bottom - 104;
-  if (g.picks.length) {
-    outlinedText(ctx, 'BUILD', 16, y - 4, {
-      size: 8, weight: 700, color: C.dim, align: 'left', outlineWidth: 0, font: FONT,
-    });
-    y += 6;
-    const names = g.picks.map((id) => MUTATORS.find((m) => m.id === id)).filter(Boolean);
-    names.forEach((m, i) => {
-      const cw = (VW - 32 - 6) / 2;
-      const cx = 16 + (i % 2) * (cw + 6);
-      const cy = y + Math.floor(i / 2) * 26;
-      roundRect(ctx, cx, cy, cw, 22, 7);
-      ctx.fillStyle = 'rgba(125,249,255,0.08)';
-      ctx.fill();
-      outlinedText(ctx, m.name, cx + cw / 2, cy + 11, {
-        size: 9, weight: 800, color: C.hull, outlineWidth: 0, font: FONT,
-      });
-    });
-    y += Math.ceil(names.length / 2) * 26 + 8;
-  }
-
-  // Sparkline of the last 20 runs — progress you can see.
-  const hist = save.scores20 || [];
-  if (hist.length > 1) {
-    const maxS = Math.max(...hist, 1);
-    const w = VW - 32;
-    const h = Math.max(30, Math.min(96, againY - y - 30));
-    ctx.save();
-    outlinedText(ctx, 'LAST 20 RUNS', 16, y - 4, {
-      size: 8, weight: 700, color: C.dim, align: 'left', outlineWidth: 0, font: FONT,
-    });
-    ctx.strokeStyle = withAlpha(C.hull, 0.8);
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    hist.forEach((v, i) => {
-      const x = 16 + (i / (hist.length - 1)) * w;
-      const yy = y + h - (v / maxS) * h;
-      if (i === 0) ctx.moveTo(x, yy);
-      else ctx.lineTo(x, yy);
-    });
-    ctx.stroke();
-    ctx.restore();
-    y += h + 12;
-  }
-
-  // Anything unlocked this run gets its own moment.
-  const rewards = [
-    ...res.unlocked.map((c) => `CORE UNLOCKED · ${c.name}`),
-    ...res.marks.map((m) => `MARK · ${m.name}`),
-    ...res.missionsDone.map((m) => `MISSION · ${m.text}`),
-  ];
-  // Only draw what actually fits above AGAIN. These lines are the payoff for
-  // the exact run where it matters most, and they were rendering underneath
-  // the button fill where nobody would ever see them.
-  const rewardRoom = Math.max(0, Math.floor((againY - 6 - y) / 16));
-  const visibleRewards = rewards.slice(0, Math.min(3, rewardRoom));
-  for (const r of visibleRewards) {
+  const againY = bottom - 190;
+  const rewards = res.missionsDone.map((m) => `MISSION · ${m.text}`);
+  const room = Math.max(0, Math.floor((againY - 10 - y) / 30));
+  for (const rw of rewards.slice(0, room)) {
     ctx.save();
     ctx.globalAlpha = 0.6 + 0.4 * Math.sin(t * 4);
-    outlinedText(ctx, r, VW / 2, y + 8, { size: 10, weight: 800, color: C.gold, outlineWidth: 2, font: FONT });
+    outlinedText(ctx, rw, VW / 2, y + 14, { size: 18, weight: 800, color: '#FFD34F', outlineWidth: 2, font: FONT });
     ctx.restore();
-    y += 16;
-  }
-  if (rewards.length > visibleRewards.length && rewardRoom > 0) {
-    outlinedText(ctx, `+${rewards.length - visibleRewards.length} MORE`, VW / 2, y + 8, {
-      size: 9, weight: 800, color: C.gold, outlineWidth: 2, font: FONT,
-    });
+    y += 30;
   }
 
-  // AGAIN sits under the thumb. Tap to playing in well under 400ms.
-  if (ui.button(ctx, input, dt, 'again', 16, bottom - 104, VW - 32, 56, 'AGAIN', {
-    textSize: 24, stroke: C.hull, fill: '#16224a', fillActive: '#22357a', glow: 16, radius: 18,
+  if (ui.button(ctx, input, dt, 'again', 32, againY, VW - 64, 100, 'DIVE AGAIN', {
+    textSize: 40, stroke: pal.accent, fill: '#141d3a', fillActive: '#22336b', glow: 22, radius: 24,
   })) {
     g.beginRun({ daily: g.isDaily });
   }
-  if (ui.button(ctx, input, dt, 'menu', 16, bottom - 42, VW - 32, 36, 'MENU', {
-    textSize: 14, stroke: '#4a4570', fill: '#101024', radius: 12,
+  if (ui.button(ctx, input, dt, 'menu', 32, bottom - 78, VW - 64, 66, 'MENU', {
+    textSize: 24, stroke: '#4a4570', fill: '#101024', radius: 16, pitch: 78,
   })) {
     g.screen = 'title';
     g.sfxBack();
   }
 }
 
-// ------------------------------------------------------------------ pause
+// ------------------------------------------------------------------- pause
 
 export function drawPause(ctx, g, view, dt) {
   const { ui, input } = g;
+  const pal = g.renderer.palette(g.run ? g.run.depth : 0);
   ctx.save();
-  ctx.fillStyle = 'rgba(4,4,14,0.8)';
+  ctx.fillStyle = 'rgba(4,4,12,0.82)';
   ctx.fillRect(0, 0, VW, view.vh);
   ctx.restore();
 
   const cy = view.vh / 2;
-  panel(ctx, 30, cy - 110, VW - 60, 220, { blurGlow: 20 });
-  outlinedText(ctx, 'PAUSED', VW / 2, cy - 78, { size: 24, weight: 900, color: C.text, outlineWidth: 4, font: FONT });
+  panel(ctx, 60, cy - 220, VW - 120, 440, { blurGlow: 24, radius: 28 });
+  outlinedText(ctx, 'PAUSED', VW / 2, cy - 156, {
+    size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT,
+  });
 
-  if (ui.button(ctx, input, dt, 'resume', 46, cy - 50, VW - 92, 48, 'RESUME', {
-    textSize: 18, stroke: C.hull, fill: '#16224a', radius: 14,
+  if (ui.button(ctx, input, dt, 'resume', 92, cy - 100, VW - 184, 92, 'RESUME', {
+    textSize: 32, stroke: pal.accent, fill: '#141d3a', radius: 20, pitch: 104,
   })) {
     g.resume();
   }
-  if (ui.button(ctx, input, dt, 'restart', 46, cy + 6, VW - 92, 40, 'RESTART', {
-    textSize: 15, stroke: '#6a6aa0', fill: '#141230', radius: 12, pitch: 46,
+  if (ui.button(ctx, input, dt, 'restart', 92, cy + 4, VW - 184, 80, 'RESTART', {
+    textSize: 26, stroke: '#6a6aa0', fill: '#12142a', radius: 18, pitch: 92,
   })) {
-    // Bank the run first. RESTART used to be the only path in the game that
-    // silently threw away a best score, a mark and a core unlock, while QUIT
-    // one row below kept all three.
+    // Bank the dive first — restarting must never be the one path that
+    // silently throws a record away.
     g.finishRun();
     g.beginRun({ daily: g.isDaily });
   }
-  if (ui.button(ctx, input, dt, 'quit', 46, cy + 52, VW - 92, 40, 'QUIT TO MENU', {
-    textSize: 15, stroke: '#4a4570', fill: '#101024', radius: 12, pitch: 46,
+  if (ui.button(ctx, input, dt, 'quit', 92, cy + 96, VW - 184, 80, 'QUIT TO MENU', {
+    textSize: 26, stroke: '#4a4570', fill: '#101024', radius: 18, pitch: 92,
   })) {
     g.endRunEarly();
   }

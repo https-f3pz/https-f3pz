@@ -2,13 +2,13 @@
 // cookies) so every access is guarded and the game degrades to in-memory —
 // you can still play, the numbers just don't survive a reload.
 
-const KEY = 'flashover.v1';
+const KEY = 'hookfall.v1';
 
 const memory = new Map();
 
 const backend = (() => {
   try {
-    const probe = '__flashover_probe__';
+    const probe = '__hookfall_probe__';
     localStorage.setItem(probe, '1');
     localStorage.removeItem(probe);
     return localStorage;
@@ -24,33 +24,24 @@ const backend = (() => {
 export function defaults() {
   return {
     v: 1,
-    best: 0,
-    bestTime: 0,
+    best: 0,           // deepest dive, in metres — the headline record
+    bestScore: 0,
+    bestCombo: 0,
     runs: 0,
-    totalFlashovers: 0,
-    timeAboveHeat50: 0,
-    bestMultHeld10s: 0,
-    scores20: [],
-    cores: {
-      needle: { best: 0, bestTime: 0, pressure: 0, bestPressure: 0 },
-      ember: { best: 0, bestTime: 0, pressure: 0, bestPressure: 0 },
-      bulwark: { best: 0, bestTime: 0, pressure: 0, bestPressure: 0 },
-    },
-    core: 'needle',
-    pressure: 0,
-    unlockedCores: ['needle'],
-    marks: {},
-    missions: null, // rolled on first launch
+    totalDepth: 0,
+    gems: 0,
+    shards: 0,
+    upgrades: { reach: 0, snap: 0, winch: 0, wax: 0 },
+    depths20: [],
+    missions: null,
     missionSets: 0,
-    daily: { date: null, score: 0, streak: 0, locked: false, history: [] },
+    daily: { date: null, depth: 0, score: 0, streak: 0, locked: false, history: [] },
     settings: {
       sound: true,
       music: true,
       haptics: true,
       reduceShake: 1,
       reduceGlow: false,
-      highContrast: false,
-      ventMode: 'lift', // 'lift' | 'secondTap'
     },
     seenTips: {},
   };

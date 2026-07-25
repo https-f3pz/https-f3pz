@@ -149,8 +149,6 @@ export function noise({
 const SEMI = (n) => Math.pow(2, n / 12);
 
 export const sfx = {
-  tap: () => tone({ freq: 660, freq2: 880, type: 'triangle', dur: 0.06, gain: 0.18 }),
-
   uiMove: () => tone({ freq: 520, type: 'square', dur: 0.045, gain: 0.12 }),
 
   uiConfirm: () => {
@@ -160,68 +158,106 @@ export const sfx = {
 
   uiBack: () => tone({ freq: 400, freq2: 260, type: 'triangle', dur: 0.1, gain: 0.16 }),
 
-  // Pitch climbs with the combo so a streak audibly ascends.
-  shatter: (step = 0) => {
-    const s = Math.min(step, 24);
-    tone({ freq: 300 * SEMI(s), freq2: 600 * SEMI(s), type: 'square', dur: 0.09, gain: 0.22 });
-    noise({ dur: 0.16, gain: 0.24, cutoff: 6000, cutoff2: 800, filter: 'bandpass', q: 0.8 });
+  hookFire: () => {
+    tone({ freq: 880, freq2: 220, type: 'square', dur: 0.09, gain: 0.14 });
+    noise({ dur: 0.03, gain: 0.10, cutoff: 3000 });
   },
 
-  perfect: (step = 0) => {
-    const s = Math.min(step, 24);
-    const base = 660 * SEMI(s);
-    tone({ freq: base, type: 'triangle', dur: 0.1, gain: 0.2 });
-    tone({ freq: base * 1.5, type: 'sine', dur: 0.18, gain: 0.16, delay: 0.03 });
-    tone({ freq: base * 2, type: 'sine', dur: 0.22, gain: 0.1, delay: 0.06 });
+  whiff: () => noise({ dur: 0.12, gain: 0.08, cutoff: 900, cutoff2: 300 }),
+
+  // The rope biting is the most important single sound in the game: it is the
+  // moment control transfers from gravity to you.
+  attach: () => {
+    tone({ freq: 180, freq2: 60, type: 'sine', dur: 0.14, gain: 0.3 });
+    noise({ dur: 0.04, gain: 0.18, cutoff: 2600, cutoff2: 700 });
   },
 
-  dash: () => {
-    noise({ dur: 0.22, gain: 0.22, cutoff: 400, cutoff2: 3400, filter: 'bandpass', q: 1.4 });
-    tone({ freq: 180, freq2: 420, type: 'sawtooth', dur: 0.14, gain: 0.12 });
+  release: () => tone({ freq: 300, freq2: 520, type: 'triangle', dur: 0.07, gain: 0.1 }),
+
+  whipcrack: () => {
+    noise({ dur: 0.12, gain: 0.3, cutoff: 4000, cutoff2: 300, filter: 'bandpass', q: 1.1 });
+    tone({ freq: 90, freq2: 40, type: 'sine', dur: 0.22, gain: 0.3 });
   },
 
-  bounce: () => tone({ freq: 220, freq2: 340, type: 'sine', dur: 0.09, gain: 0.22 }),
-
-  pickup: () => {
-    tone({ freq: 880, type: 'sine', dur: 0.07, gain: 0.16 });
-    tone({ freq: 1320, type: 'sine', dur: 0.1, gain: 0.12, delay: 0.05 });
+  // Grazes climb a pentatonic ladder, so a chain plays an ascending melody
+  // over the music rather than repeating one blip.
+  graze: (combo = 0) => {
+    const SCALE = [0, 3, 5, 7, 10];
+    const n = SCALE[combo % 5] + 12 * Math.min(3, Math.floor(combo / 5));
+    tone({ freq: 660 * SEMI(n), type: 'triangle', dur: 0.07, gain: 0.16 });
   },
 
-  shieldBreak: () => {
-    noise({ dur: 0.3, gain: 0.3, cutoff: 4000, cutoff2: 300, filter: 'lowpass' });
-    tone({ freq: 500, freq2: 120, type: 'sawtooth', dur: 0.26, gain: 0.2 });
+  gem: () => {
+    tone({ freq: 880, type: 'sine', dur: 0.06, gain: 0.16 });
+    tone({ freq: 1320, type: 'sine', dur: 0.08, gain: 0.13, delay: 0.03 });
   },
 
-  hurt: () => {
-    tone({ freq: 240, freq2: 70, type: 'sawtooth', dur: 0.3, gain: 0.3 });
-    noise({ dur: 0.25, gain: 0.22, cutoff: 900, cutoff2: 160 });
+  scrape: () => noise({ dur: 0.22, gain: 0.22, cutoff: 1800, cutoff2: 380, filter: 'bandpass', q: 0.8 }),
+
+  milestone: () => {
+    [0, 7, 12].forEach((n, i) =>
+      tone({ freq: 523 * SEMI(n), type: 'triangle', dur: 0.2, gain: 0.15, delay: i * 0.055 })
+    );
+  },
+
+  biome: () => {
+    [0, 5, 9, 12, 16].forEach((n, i) =>
+      tone({ freq: 392 * SEMI(n), type: 'sine', dur: 0.45, gain: 0.16, delay: i * 0.09 })
+    );
+  },
+
+  best: () => {
+    [0, 4, 7, 12].forEach((n, i) =>
+      tone({ freq: 523 * SEMI(n), type: 'triangle', dur: 0.3, gain: 0.18, delay: i * 0.07 })
+    );
   },
 
   death: () => {
-    tone({ freq: 330, freq2: 55, type: 'sawtooth', dur: 0.9, gain: 0.3 });
-    tone({ freq: 220, freq2: 40, type: 'square', dur: 1.1, gain: 0.18, delay: 0.05 });
-    noise({ dur: 0.9, gain: 0.25, cutoff: 2200, cutoff2: 120 });
-  },
-
-  levelUp: () => {
-    [0, 4, 7, 12].forEach((n, i) =>
-      tone({ freq: 440 * SEMI(n), type: 'triangle', dur: 0.22, gain: 0.18, delay: i * 0.07 })
-    );
-  },
-
-  unlock: () => {
-    [0, 5, 9, 12, 16].forEach((n, i) =>
-      tone({ freq: 392 * SEMI(n), type: 'sine', dur: 0.4, gain: 0.16, delay: i * 0.09 })
-    );
-  },
-
-  warn: () => tone({ freq: 180, type: 'square', dur: 0.14, gain: 0.14 }),
-
-  rush: () => {
-    tone({ freq: 90, freq2: 300, type: 'sawtooth', dur: 0.5, gain: 0.22 });
-    noise({ dur: 0.6, gain: 0.2, cutoff: 200, cutoff2: 5000, filter: 'bandpass', q: 1.2 });
+    tone({ freq: 400, freq2: 50, type: 'sawtooth', dur: 0.7, gain: 0.3 });
+    noise({ dur: 0.8, gain: 0.26, cutoff: 2400, cutoff2: 120 });
   },
 };
+
+// ---------------------------------------------------------- swing whoosh
+// The signature voice, and the only persistent one: a single noise source
+// through a single bandpass, created once and driven purely by param ramps.
+// Allocating nodes per frame for this would be audible as clicks and would
+// churn the audio thread; instead the rope literally sings as you accelerate.
+
+let whooshSrc = null;
+let whooshGain = null;
+let whooshFilter = null;
+
+function ensureWhoosh() {
+  if (whooshSrc || !ready) return;
+  whooshSrc = ctx.createBufferSource();
+  whooshSrc.buffer = getNoise();
+  whooshSrc.loop = true;
+  whooshFilter = ctx.createBiquadFilter();
+  whooshFilter.type = 'bandpass';
+  whooshFilter.Q.value = 1.1;
+  whooshFilter.frequency.value = 400;
+  whooshGain = ctx.createGain();
+  whooshGain.gain.value = 0;
+  whooshSrc.connect(whooshFilter);
+  whooshFilter.connect(whooshGain);
+  whooshGain.connect(sfxBus);
+  whooshSrc.start();
+}
+
+/** speed in px/s; gain ramps in over 600..2600, cutoff tracks speed. */
+export function setWhoosh(speed) {
+  if (!ready || !settings.sound) return;
+  ensureWhoosh();
+  if (!whooshGain) return;
+  const k = Math.max(0, Math.min(1, (speed - 600) / 2000));
+  whooshGain.gain.setTargetAtTime(k * 0.11, ctx.currentTime, 0.05);
+  whooshFilter.frequency.setTargetAtTime(400 + 0.35 * speed, ctx.currentTime, 0.05);
+}
+
+export function stopWhoosh() {
+  if (whooshGain && ready) whooshGain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+}
 
 // -------------------------------------------------------------- music layer
 // A tiny generative sequencer: a rolling bass pulse plus an arpeggio whose

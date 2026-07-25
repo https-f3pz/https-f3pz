@@ -45,7 +45,7 @@ const save = load();
 setHaptics(save.settings.haptics !== false);
 
 const input = new Input(canvas);
-const fx = new Fx({ reduceMotion: !!save.settings.reduceFx });
+const fx = new Fx({ reduceMotion: !!save.settings.reduceGlow, shakeScale: save.settings.reduceShake ?? 1 });
 
 let game = null;
 const loop = new Loop({

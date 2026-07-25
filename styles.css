@@ -3,7 +3,7 @@
    refreshing) in the middle of a game. */
 
 :root {
-  --ink: #07060f;
+  --ink: #0b1020;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
@@ -62,7 +62,7 @@ body {
   place-content: center;
   justify-items: center;
   gap: 22px;
-  background: radial-gradient(circle at 50% 42%, #17123a 0%, #07060f 62%);
+  background: radial-gradient(circle at 50% 42%, #16203a 0%, #0b1020 62%);
   z-index: 10;
   transition: opacity 320ms ease;
 }
@@ -75,8 +75,8 @@ body {
 .boot-mark {
   width: 54px;
   height: 54px;
-  background: linear-gradient(150deg, #6df2ff, #b26bff 55%, #ff5fa8);
-  clip-path: polygon(50% 0%, 100% 42%, 74% 100%, 26% 100%, 0% 42%);
+  background: linear-gradient(150deg, #57e0ff, #7ab6ff 55%, #ff3b6b);
+  border-radius: 50%; clip-path: none; border: 6px solid transparent;
   animation: spin 2.4s cubic-bezier(0.6, 0, 0.35, 1) infinite;
 }
 

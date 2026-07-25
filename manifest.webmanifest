@@ -1,23 +1,49 @@
 {
-  "name": "Flashover",
-  "short_name": "Flashover",
-  "description": "A one-thumb bullet-hell where enemy fire is your fuel. Fully offline, installable, no ads, no accounts.",
+  "name": "Hookfall",
+  "short_name": "Hookfall",
+  "description": "Dive a collapsing chasm on a grappling hook. Hold to swing, release to fly. Fully offline, installable, no ads.",
   "start_url": "./index.html",
   "scope": "./",
-  "id": "flashover",
+  "id": "hookfall",
   "display": "fullscreen",
-  "display_override": ["fullscreen", "standalone"],
+  "display_override": [
+    "fullscreen",
+    "standalone"
+  ],
   "orientation": "portrait",
-  "background_color": "#07060f",
-  "theme_color": "#07060f",
-  "categories": ["games", "entertainment"],
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "categories": [
+    "games",
+    "entertainment"
+  ],
   "lang": "en",
   "dir": "ltr",
   "prefer_related_applications": false,
   "icons": [
-    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "./icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "./icons/favicon-64.png", "sizes": "64x64", "type": "image/png", "purpose": "any" }
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./icons/favicon-64.png",
+      "sizes": "64x64",
+      "type": "image/png",
+      "purpose": "any"
+    }
   ]
 }

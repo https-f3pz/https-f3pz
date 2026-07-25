@@ -111,7 +111,7 @@ export const FIXED_STEP = STEP;
 // Canvas sizing that respects device pixel ratio without melting a phone GPU:
 // we cap the backing store so a 3x 1440p screen doesn't ask Canvas 2D to fill
 // 12 million pixels a frame.
-export function fitCanvas(canvas, ctx, maxDpr = 2.5) {
+export function fitCanvas(canvas, ctx, maxDpr = 2) {
   const cssW = canvas.clientWidth || window.innerWidth;
   const cssH = canvas.clientHeight || window.innerHeight;
   const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
