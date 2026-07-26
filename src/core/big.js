@@ -234,9 +234,12 @@ export function fmt(a, places = 2) {
   if (v.e < 0) return toNumber(v).toFixed(Math.min(6, places + 2));
 
   // Under a thousand: no suffix, and no decimals once it reads as a count.
+  // Deliberately NOT toLocaleString — this module is headless-tested, and a
+  // locale-dependent separator makes the test suite pass or fail based on the
+  // machine's region settings.
   if (v.e < 3) {
     const n = toNumber(v);
-    return n < 10 && !Number.isInteger(n) ? n.toFixed(places) : Math.floor(n).toLocaleString();
+    return n < 10 && !Number.isInteger(n) ? n.toFixed(places) : String(Math.floor(n));
   }
 
   const group = Math.floor(v.e / 3);

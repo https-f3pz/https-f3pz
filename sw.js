@@ -5,7 +5,7 @@
 // version ships by bumping CACHE, which precaches the new shell in the
 // background and swaps it in on the next launch.
 
-const CACHE = 'redshift-v1';
+const CACHE = 'redshift-v2';
 
 const SHELL = [
   './',
@@ -21,14 +21,16 @@ const SHELL = [
   './src/core/fx.js',
   './src/core/draw.js',
   './src/core/widgets.js',
+  './src/core/big.js',
+  './src/core/awaytime.js',
+  './src/core/scroll.js',
   './src/game/game.js',
   './src/game/config.js',
-  './src/game/track.js',
-  './src/game/run.js',
+  './src/game/economy.js',
+  './src/game/world.js',
   './src/game/render.js',
-  './src/game/hud.js',
+  './src/game/layers.js',
   './src/game/screens.js',
-  './src/game/meta.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/maskable-512.png',

@@ -1,285 +1,429 @@
-// Every non-run screen, drawn on the same canvas as the game.
+// Every screen, drawn on the same canvas as the tunnel.
 // Coordinates are the 720-wide virtual space; game.js scales it to the device.
+//
+// The tunnel is always live underneath, on every screen — game.js draws it
+// before dispatching here. Everything below is overlay.
+//
+// The layout law, inherited from the reflex game and still correct: the top
+// strip is readouts, the bottom of the screen is thumb space, and nothing that
+// must be read lives under a thumb.
 
-import { VW, UPGRADES, ZONES } from './config.js';
+import { VW, LADDER, TIERS, AUTO, OVERDRIVE, GOV_STEPS, PRESTIGE_STEPS, CHALLENGES, AWAY, GATE } from './config.js';
 import { outlinedText, roundRect, polygon, withAlpha, clamp } from '../core/draw.js';
 import { panel, meter } from '../core/widgets.js';
-import { rank, RANKS, ensureMissions, upgradeTier, upgradeCost, todayKey } from './meta.js';
+import { Scroller } from '../core/scroll.js';
+import * as B from '../core/big.js';
+import * as E from './economy.js';
+import { humanDuration } from '../core/awaytime.js';
+import { LAYERS, layerNamesBetween } from './layers.js';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 const TAU = Math.PI * 2;
 
-// A slow idle version of the tube, so the menus sit inside the same world.
-function bg(ctx, view, t, pal) {
-  const g = ctx.createLinearGradient(0, 0, 0, view.vh);
-  g.addColorStop(0, pal.fog);
-  g.addColorStop(0.45, pal.wall);
-  g.addColorStop(1, pal.fog);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, VW, view.vh);
+const scrollers = { drives: new Scroller(), board: new Scroller(), away: new Scroller() };
 
-  const cx = VW / 2;
-  const cy = view.vh * 0.44;
-  ctx.save();
-  ctx.globalAlpha = 0.5;
-  for (let i = 0; i < 14; i++) {
-    // Rings marching outward from the vanishing point.
-    const k = ((i / 14) + (t * 0.09) % (1 / 14) * 14) % 1;
-    const s = Math.pow(k, 2.2) * 3.2;
-    const r = 40 + s * 520;
-    ctx.strokeStyle = withAlpha(pal.edge, 0.30 * (1 - k));
-    ctx.lineWidth = 1 + (1 - k) * 2;
-    ctx.beginPath();
-    for (let j = 0; j <= 8; j++) {
-      const a = (j / 8) * TAU + t * 0.05;
-      const x = cx + Math.cos(a) * r;
-      const y = cy + Math.sin(a) * r;
-      if (j === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.stroke();
-  }
-  const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, 220);
-  gr.addColorStop(0, withAlpha(pal.edge, 0.30));
-  gr.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = gr;
-  ctx.fillRect(0, 0, VW, view.vh);
-  ctx.restore();
-}
-
-function sigil(ctx, x, y, r, tier, t, color) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(t * 0.3);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
-  polygon(ctx, 0, 0, r, 8, 0);
-  ctx.stroke();
-  ctx.globalAlpha = 0.45;
-  polygon(ctx, 0, 0, r * 0.66, 8, Math.PI / 8);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-  for (let i = 0; i <= tier; i++) {
-    const a = (i / RANKS.length) * TAU - Math.PI / 2;
-    ctx.beginPath();
-    ctx.arc(Math.cos(a) * r, Math.sin(a) * r, 5, 0, TAU);
-    ctx.fillStyle = color;
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-function shardChip(ctx, save, x, y) {
-  outlinedText(ctx, `◆ ${Math.floor(save.shards || 0).toLocaleString()}`, x, y, {
-    size: 22, weight: 800, color: '#FFD34F', align: 'right', outlineWidth: 3, font: FONT,
+function txt(ctx, s, x, y, size, color, opts = {}) {
+  outlinedText(ctx, s, x, y, {
+    size, weight: opts.weight ?? 800, color, outlineWidth: opts.outline ?? 3,
+    font: FONT, align: opts.align ?? 'center',
   });
 }
 
-// ------------------------------------------------------------------- title
+/** A dim slab behind readouts so they stay legible over a bright tunnel. */
+function scrim(ctx, x, y, w, h, a = 0.55) {
+  roundRect(ctx, x, y, w, h, 16);
+  ctx.fillStyle = `rgba(4,6,14,${a})`;
+  ctx.fill();
+}
 
-export function drawTitle(ctx, g, view, dt) {
-  const { ui, input, save, t } = g;
-  const pal = g.renderer.palette(0);
-  bg(ctx, view, t, pal);
+// =========================================================== THE BORE
 
+export function drawBore(ctx, g, view, dt) {
+  const { ui, input, st, world } = g;
+  const pal = g.renderer.pal ?? g.renderer.palette(0);
   const top = view.insetTop;
   const bottom = view.vh - view.insetBottom;
-  const r = rank(save.best);
-  const tier = Math.max(0, RANKS.indexOf(r));
 
-  sigil(ctx, VW / 2, top + 96, 46, tier, t, pal.edge);
-  outlinedText(ctx, r.name, VW / 2, top + 160, {
-    size: 20, weight: 900, color: '#FFD34F', outlineWidth: 3, font: FONT,
-  });
-  outlinedText(ctx, 'REDSHIFT', VW / 2, top + 222, {
-    size: 76, weight: 900, color: '#FFFFFF', outlineWidth: 6, font: FONT,
-  });
-  outlinedText(ctx, 'THE FASTER YOU GO, THE MORE IT LIES', VW / 2, top + 262, {
-    size: 18, weight: 700, color: withAlpha('#FFFFFF', 0.45), outlineWidth: 3, font: FONT,
-  });
-  outlinedText(ctx, `BEST  ${Math.round(save.best || 0).toLocaleString()}`, VW / 2, top + 310, {
-    size: 30, weight: 800, color: '#FFD34F', outlineWidth: 4, font: FONT,
-  });
-  shardChip(ctx, save, VW - 24, top + 30);
+  // ---- the readout strip
+  scrim(ctx, 16, top + 6, VW - 32, 150, 0.5);
+  txt(ctx, B.fmt(st.depth), VW / 2, top + 62, 58, '#FFFFFF', { weight: 900, outline: 6 });
+  txt(ctx, `${B.fmt(E.rate(st))} / SEC`, VW / 2, top + 92, 20, withAlpha('#FFFFFF', 0.65));
 
-  let y = top + 346;
-  const reached = ZONES.filter((z) => (save.best || 0) >= z.at);
-  const next = ZONES[reached.length];
-  if (next) {
-    const prev = reached[reached.length - 1];
-    outlinedText(ctx, `NEXT: ${next.name} AT ${next.at.toLocaleString()}`, VW / 2, y, {
-      size: 17, weight: 700, color: withAlpha('#FFFFFF', 0.5), outlineWidth: 2, font: FONT,
-    });
-    meter(ctx, 120, y + 16, VW - 240, 7, ((save.best || 0) - prev.at) / (next.at - prev.at), { fg: next.edge });
+  // Warp meter — the same 0..1 that is bending the picture behind it.
+  const bx = 40;
+  const bw = VW - 80;
+  meter(ctx, bx, top + 108, bw, 10, world.warp, { fill: pal.edge, radius: 5 });
+  txt(ctx, pal.name ?? '', bx, top + 138, 16, withAlpha(pal.edge, 0.9), { align: 'left' });
+  txt(ctx, `FIELD ${world.band}`, bx + bw, top + 138, 16, withAlpha('#FFFFFF', 0.5), { align: 'right' });
+
+  // ---- currency chips
+  let cy = top + 176;
+  chip(ctx, 24, cy, 210, 'PHOTONS', B.fmt(st.photons.bank), '#FFD34F');
+  chip(ctx, 255, cy, 210, 'PROPER TIME', B.fmt(st.tau.bank), '#8dffd0');
+  chip(ctx, 486, cy, 210, 'OMEGA', String(st.omega.total - st.omega.bore - st.omega.drift - st.omega.stasis), '#ff7ae0');
+
+  // ---- the next structural threshold, always named as a hard number
+  const nxt = nextThreshold(st);
+  scrim(ctx, 24, cy + 66, VW - 48, 40, 0.45);
+  txt(ctx, nxt, VW / 2, cy + 92, 18, withAlpha('#FFFFFF', 0.8));
+
+  // ---- the drive ladder
+  const listY = cy + 118;
+  const listH = bottom - listY - 190;
+  const rowH = 84;
+  const pitch = 90;
+  const contentH = st.tiers * pitch;
+  const off = scrollers.drives.begin(ctx, input, dt, 16, listY, VW - 32, listH, contentH);
+  for (let k = 1; k <= st.tiers; k++) {
+    const y = listY + (k - 1) * pitch - off;
+    if (y + rowH < listY - 20 || y > listY + listH + 20) continue;
+    driveRow(ctx, g, view, dt, k, y, rowH, pitch, pal);
+  }
+  scrollers.drives.end(ctx);
+
+  // ---- PRIME: one button, always the correct tap
+  const p = g.prime();
+  const collapseWorth = E.canCollapse(st);
+  const py = bottom - 168;
+  if (collapseWorth) {
+    const gain = E.collapseGain(st);
+    if (ui.button(ctx, input, dt, 'prime', 28, py, VW - 56, 76, `COLLAPSE — +${B.fmt(gain)} PHOTONS`, {
+      textSize: 24, stroke: '#FFD34F', fill: '#3a2e10', radius: 18, pitch: 84, glow: 10,
+    })) g.doCollapse();
+  } else if (p) {
+    const nm = LADDER[p.k - 1];
+    if (ui.button(ctx, input, dt, 'prime', 28, py, VW - 56, 76, `BUY ${nm}`, {
+      textSize: 24, stroke: pal.edge, fill: '#141d3a', radius: 18, pitch: 84,
+      sub: B.fmt(p.cost),
+    })) g.buyTier(p.k, 1);
   } else {
-    outlinedText(ctx, 'EVERY ZONE REACHED', VW / 2, y, {
-      size: 17, weight: 700, color: '#FFD34F', outlineWidth: 2, font: FONT,
-    });
-  }
-  y += 52;
-
-  const missions = ensureMissions(save);
-  outlinedText(ctx, 'MISSIONS', 28, y, {
-    size: 18, weight: 800, color: withAlpha('#FFFFFF', 0.45), align: 'left', outlineWidth: 2, font: FONT,
-  });
-  y += 18;
-  for (const m of missions) {
-    ctx.save();
-    ctx.globalAlpha = m.done ? 1 : 0.78 + 0.22 * Math.sin(t * 2 + m.text.length);
-    roundRect(ctx, 28, y, VW - 56, 36, 10);
-    ctx.fillStyle = m.done ? 'rgba(255,211,79,0.14)' : 'rgba(255,255,255,0.05)';
-    ctx.fill();
-    outlinedText(ctx, (m.done ? '✓ ' : '') + m.text, 44, y + 18, {
-      size: 17, weight: 700, color: m.done ? '#FFD34F' : withAlpha('#FFFFFF', 0.6),
-      align: 'left', outlineWidth: 0, font: FONT,
-    });
-    if (!m.done && m.prog > 0) meter(ctx, VW - 160, y + 15, 110, 6, m.prog / m.goal, { fg: pal.edge });
-    ctx.restore();
-    y += 44;
+    scrim(ctx, 28, py, VW - 56, 76, 0.4);
+    txt(ctx, 'FALLING', VW / 2, py + 46, 24, withAlpha('#FFFFFF', 0.45));
   }
 
-  const playY = bottom - 76 - 16 - 104;
+  // ---- max all / boards / settings
+  const by = bottom - 82;
+  if (ui.button(ctx, input, dt, 'maxall', 28, by, 200, 70, 'MAX ALL', {
+    textSize: 22, stroke: '#6a6aa0', fill: '#141634', radius: 18, pitch: 78,
+  })) g.buyMaxAll();
+  if (ui.button(ctx, input, dt, 'boards', 244, by, 200, 70, 'BOARDS', {
+    textSize: 22, stroke: '#6a6aa0', fill: '#141634', radius: 18, pitch: 78,
+  })) { g.screen = 'boards'; g.sfxConfirm(); }
+  if (ui.button(ctx, input, dt, 'settings', 460, by, 232, 70, 'SETTINGS', {
+    textSize: 22, stroke: '#6a6aa0', fill: '#141634', radius: 18, pitch: 78,
+  })) { g.screen = 'settings'; g.sfxConfirm(); }
 
-  if (playY - y > 170) {
-    y += 16;
-    const stats = [
-      ['RUNS', String(save.runs || 0)],
-      ['TOP SPEED', String(Math.round(save.bestSpeed || 0))],
-      ['TOTAL', `${Math.round((save.totalDist || 0) / 1000)}k`],
-    ];
-    const sw = (VW - 56 - 24) / 3;
-    stats.forEach((st, i) => {
-      const x = 28 + i * (sw + 12);
-      roundRect(ctx, x, y, sw, 72, 12);
-      ctx.fillStyle = 'rgba(255,255,255,0.05)';
-      ctx.fill();
-      outlinedText(ctx, st[1], x + sw / 2, y + 28, { size: 26, weight: 900, color: '#FFFFFF', outlineWidth: 0, font: FONT });
-      outlinedText(ctx, st[0], x + sw / 2, y + 54, { size: 12, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 0, font: FONT });
-    });
-    y += 88;
-  }
-
-  const hist = save.dists20 || [];
-  if (hist.length > 1 && playY - y > 90) {
-    y += 12;
-    outlinedText(ctx, 'LAST 20 RUNS', 28, y, {
-      size: 15, weight: 700, color: withAlpha('#FFFFFF', 0.35), align: 'left', outlineWidth: 0, font: FONT,
-    });
-    const h = clamp(playY - y - 44, 60, 300);
-    const maxD = Math.max(...hist, 1);
-    ctx.save();
-    ctx.strokeStyle = withAlpha(pal.edge, 0.85);
-    ctx.lineWidth = 3;
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    hist.forEach((v, i) => {
-      const x = 28 + (i / (hist.length - 1)) * (VW - 56);
-      const yy = y + 16 + h - (v / maxD) * h;
-      if (i === 0) ctx.moveTo(x, yy);
-      else ctx.lineTo(x, yy);
-    });
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  if (ui.button(ctx, input, dt, 'play', 32, playY, VW - 64, 104, 'GO', {
-    textSize: 48, stroke: pal.edge, fill: '#141d3a', fillActive: '#22336b', glow: 22, radius: 26,
-  })) {
-    g.beginRun({ daily: false });
-  }
-
-  const bw = (VW - 64 - 24) / 3;
-  const done = save.daily?.date === todayKey() && save.daily?.locked;
-  if (ui.button(ctx, input, dt, 'daily', 32, bottom - 76, bw, 60, done ? 'DAILY ✓' : 'DAILY', {
-    textSize: 20, sub: done ? `${Math.round(save.daily.dist)} · ${save.daily.streak}d` : 'ONE SEED',
-    stroke: done ? '#FFD34F' : '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
-  })) {
-    g.beginRun({ daily: true });
-  }
-  if (ui.button(ctx, input, dt, 'ship', 32 + bw + 12, bottom - 76, bw, 60, 'SHIP', {
-    textSize: 20, sub: 'UPGRADES', stroke: '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
-  })) {
-    g.screen = 'ship';
-    g.sfxConfirm();
-  }
-  if (ui.button(ctx, input, dt, 'settings', 32 + (bw + 12) * 2, bottom - 76, bw, 60, 'SETTINGS', {
-    textSize: 20, sub: 'SOUND', stroke: '#6a6aa0', fill: '#12142a', radius: 16, pitch: 60,
-  })) {
-    g.screen = 'settings';
-    g.sfxConfirm();
-  }
+  bannerLine(ctx, g, view);
 }
 
-// -------------------------------------------------------------- ship shop
+function chip(ctx, x, y, w, label, value, color) {
+  scrim(ctx, x, y, w, 54, 0.5);
+  txt(ctx, label, x + w / 2, y + 20, 13, withAlpha(color, 0.75));
+  txt(ctx, value, x + w / 2, y + 44, 22, color, { weight: 900 });
+}
 
-export function drawShip(ctx, g, view, dt) {
-  const { ui, input, save, t } = g;
-  const pal = g.renderer.palette(0);
-  bg(ctx, view, t, pal);
+function driveRow(ctx, g, view, dt, k, y, h, pitch, pal) {
+  const { ui, input, st } = g;
+  const x = 24;
+  const w = VW - 48;
+  scrim(ctx, x, y, w, h, 0.55);
+
+  const owned = st.owned[k] | 0;
+  const cost = E.costFor(st, k, 1);
+  const can = B.lte(cost, st.depth);
+  const mult = E.milestone(st, k);
+
+  txt(ctx, LADDER[k - 1], x + 16, y + 26, 20, '#FFFFFF', { align: 'left', weight: 900 });
+  txt(ctx, `${owned}`, x + 16, y + 52, 17, withAlpha('#FFFFFF', 0.6), { align: 'left' });
+  txt(ctx, `x${B.fmt(mult)}`, x + 96, y + 52, 17, withAlpha(pal.edge, 0.85), { align: 'left' });
+
+  // Milestone progress: the one bar in this game that is a genuine 0..1 count
+  // rather than a log-space fraction, which is exactly why it earns its place.
+  const into = owned % 20;
+  meter(ctx, x + 16, y + 62, 190, 6, into / 20, { fill: '#FFD34F', radius: 3 });
+  txt(ctx, `${into}/20`, x + 214, y + 68, 13, withAlpha('#FFD34F', 0.8), { align: 'left' });
+
+  if (ui.button(ctx, input, dt, `buy${k}`, x + w - 214, y + 12, 200, h - 24, B.fmt(cost), {
+    textSize: 20, disabled: !can, radius: 14, pitch,
+    stroke: can ? pal.edge : '#4a4a6a', fill: can ? '#182246' : '#12121e',
+    sub: 'BUY',
+  })) g.buyTier(k, st.auto.bulk ? Infinity : 1);
+}
+
+/** The next thing that structurally changes, named as a hard number. */
+function nextThreshold(st) {
+  if (!E.canCollapse(st) && st.collapses === 0) {
+    return `COLLAPSE AT ${B.fmt(GATE.collapse)} DEPTH — NOW ${B.fmt(st.depth)}`;
+  }
+  if (!E.canDilate(st)) {
+    return `DILATE NEEDS ${B.fmt(GATE.dilate)} LIFETIME PHOTONS — HAVE ${B.fmt(st.photons.life)}`;
+  }
+  const need = B.pow10(st.omega.total + 6);
+  if (!E.canHorizon(st)) {
+    return `EVENT HORIZON NEEDS ${B.fmt(need)} PROPER TIME — HAVE ${B.fmt(st.tau.life)}`;
+  }
+  return 'EVENT HORIZON AVAILABLE';
+}
+
+function bannerLine(ctx, g, view) {
+  if (!(g.bannerT > 0)) return;
+  // Over its own slab. Without one it lands on top of the drive list and both
+  // become unreadable — caught by looking at a screenshot, not by a test.
+  const y = view.vh * 0.42;
+  ctx.save();
+  ctx.globalAlpha = clamp(g.bannerT * 1.2, 0, 1);
+  scrim(ctx, 20, y - 34, VW - 40, 64, 0.88);
+  txt(ctx, g.banner, VW / 2, y + 10, 30, '#FFFFFF', { weight: 900, outline: 5 });
+  ctx.restore();
+}
+
+// =========================================================== THE BOARDS
+
+export function drawBoards(ctx, g, view, dt) {
+  const { ui, input, st } = g;
+  const pal = g.renderer.pal ?? g.renderer.palette(0);
   const top = view.insetTop;
   const bottom = view.vh - view.insetBottom;
+  const names = ['PHOTON BOARD', 'TAU BOARD', 'HORIZON'];
+  const colors = ['#FFD34F', '#8dffd0', '#ff7ae0'];
 
-  outlinedText(ctx, 'THE SHIP', VW / 2, top + 54, {
-    size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT,
+  scrim(ctx, 16, top + 6, VW - 32, 60, 0.6);
+  if (ui.button(ctx, input, dt, 'boardtab', 24, top + 10, VW - 48, 52, names[g.board], {
+    textSize: 26, stroke: colors[g.board], fill: '#141634', radius: 14, pitch: 60,
+  })) { g.board = (g.board + 1) % 3; scrollers.board.reset(); g.sfxConfirm(); }
+
+  const bankLabel = g.board === 0
+    ? `${B.fmt(st.photons.bank)} PHOTONS`
+    : g.board === 1
+      ? `${B.fmt(st.tau.bank)} PROPER TIME`
+      : `${st.omega.total - st.omega.bore - st.omega.drift - st.omega.stasis} OMEGA FREE`;
+  txt(ctx, bankLabel, VW / 2, top + 92, 22, colors[g.board], { weight: 900 });
+
+  const listY = top + 110;
+  const listH = bottom - listY - 92;
+  const rows = g.board === 0 ? photonRows(g) : g.board === 1 ? tauRows(g) : omegaRows(g);
+  const pitch = 84;
+  const off = scrollers.board.begin(ctx, input, dt, 16, listY, VW - 32, listH, rows.length * pitch + 8);
+  rows.forEach((r, i) => {
+    const y = listY + i * pitch - off;
+    if (y + 76 < listY - 20 || y > listY + listH + 20) return;
+    boardRow(ctx, g, view, dt, r, y, pitch, pal);
   });
-  outlinedText(ctx, 'LENS TRADES SPECTACLE FOR READABILITY', VW / 2, top + 90, {
-    size: 15, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 2, font: FONT,
-  });
-  shardChip(ctx, save, VW - 24, top + 30);
+  scrollers.board.end(ctx);
 
-  let y = top + 128;
-  for (const u of UPGRADES) {
-    const tier = upgradeTier(save, u.id);
-    const cost = upgradeCost(save, u.id);
-    const maxed = cost == null;
-    const afford = !maxed && (save.shards || 0) >= cost;
+  if (ui.button(ctx, input, dt, 'bback', 28, bottom - 82, VW - 56, 70, 'BACK', {
+    textSize: 28, stroke: pal.edge, fill: '#141d3a', radius: 18, pitch: 78,
+  })) { g.screen = 'bore'; g.sfxBack(); }
 
-    roundRect(ctx, 28, y, VW - 56, 108, 16);
-    ctx.fillStyle = 'rgba(255,255,255,0.05)';
-    ctx.fill();
-    outlinedText(ctx, u.name, 48, y + 30, { size: 26, weight: 900, color: '#FFFFFF', align: 'left', outlineWidth: 0, font: FONT });
-    outlinedText(ctx, u.blurb, 48, y + 56, { size: 16, weight: 700, color: withAlpha('#FFFFFF', 0.45), align: 'left', outlineWidth: 0, font: FONT });
-    outlinedText(ctx, u.unit(tier), 48, y + 84, { size: 19, weight: 800, color: pal.edge, align: 'left', outlineWidth: 0, font: FONT });
-
-    for (let i = 0; i < 5; i++) {
-      const px = 320 + i * 26;
-      roundRect(ctx, px, y + 74, 18, 14, 4);
-      ctx.fillStyle = i < tier ? pal.edge : 'rgba(255,255,255,0.14)';
-      ctx.fill();
-    }
-
-    if (ui.button(ctx, input, dt, `buy${u.id}`, VW - 214, y + 22, 166, 64, maxed ? 'MAX' : `◆ ${cost}`, {
-      textSize: 24,
-      stroke: maxed ? '#4a4570' : afford ? '#FFD34F' : '#4a4570',
-      fill: afford ? '#3a2f10' : '#12142a',
-      disabled: maxed || !afford, radius: 14, pitch: 64,
-    })) {
-      if (g.buy(u.id)) g.sfxConfirm();
-    }
-    y += 120;
-  }
-
-  if (ui.button(ctx, input, dt, 'shipback', 32, bottom - 84, VW - 64, 72, 'BACK', {
-    textSize: 30, stroke: pal.edge, fill: '#141d3a', radius: 18,
-  })) {
-    g.screen = 'title';
-    g.sfxBack();
-  }
+  bannerLine(ctx, g, view);
 }
 
-// ---------------------------------------------------------------- settings
+function boardRow(ctx, g, view, dt, r, y, pitch, pal) {
+  const { ui, input } = g;
+  const x = 24;
+  const w = VW - 48;
+  scrim(ctx, x, y, w, 76, 0.55);
+  txt(ctx, r.name, x + 16, y + 28, 20, r.owned ? withAlpha('#FFFFFF', 0.5) : '#FFFFFF', { align: 'left', weight: 900 });
+  txt(ctx, r.sub, x + 16, y + 54, 16, withAlpha('#FFFFFF', 0.55), { align: 'left' });
+  if (r.owned) {
+    txt(ctx, r.ownedLabel ?? 'OWNED', x + w - 22, y + 44, 20, withAlpha('#8dffd0', 0.9), { align: 'right' });
+    return;
+  }
+  if (ui.button(ctx, input, dt, r.key, x + w - 214, y + 10, 200, 56, r.cost, {
+    textSize: 20, disabled: !r.can, radius: 14, pitch,
+    stroke: r.can ? pal.edge : '#4a4a6a', fill: r.can ? '#182246' : '#12121e',
+  })) r.act();
+}
+
+function photonRows(g) {
+  const st = g.st;
+  const rows = [];
+  const afford = (c) => B.gte(st.photons.bank, B.big(c));
+  for (let k = 1; k <= st.tiers; k++) {
+    const c = Math.pow(AUTO.driveBase, k - 1);
+    rows.push({
+      key: `ad${k}`, name: `AUTO-DRIVE ${LADDER[k - 1]}`, sub: 'BUYS THIS TIER FOR YOU',
+      owned: st.auto.drive[k], cost: B.fmt(B.big(c)), can: afford(c),
+      act: () => g.spendPhotons(c, () => { st.auto.drive[k] = true; }),
+    });
+  }
+  rows.push({
+    key: 'bulk', name: 'BULK', sub: 'EVERY BUY BECOMES BUY-MAX',
+    owned: st.auto.bulk, cost: B.fmt(B.big(AUTO.bulk)), can: afford(AUTO.bulk),
+    act: () => g.spendPhotons(AUTO.bulk, () => { st.auto.bulk = true; }),
+  });
+  if (st.auto.governor) {
+    rows.push({
+      key: 'gov', name: 'GOVERNOR', sub: `RESERVE ${Math.round(GOV_STEPS[st.gov] * 100)}% FOR THE BIG TIERS`,
+      owned: false, cost: 'CHANGE', can: true,
+      act: () => { st.gov = (st.gov + 1) % GOV_STEPS.length; g.sfxConfirm(); g.commit(true); },
+    });
+  } else {
+    rows.push({
+      key: 'gov', name: 'GOVERNOR', sub: 'STOP CHEAP TIERS STARVING EXPENSIVE ONES',
+      owned: false, cost: B.fmt(B.big(AUTO.governor)), can: afford(AUTO.governor),
+      act: () => g.spendPhotons(AUTO.governor, () => { st.auto.governor = true; st.gov = 1; }),
+    });
+  }
+  if (st.auto.collapse) {
+    rows.push({
+      key: 'acol', name: 'AUTO-COLLAPSE', sub: `FIRES AT x${PRESTIGE_STEPS[st.thr.collapse]} YOUR BANK`,
+      owned: false, cost: 'CHANGE', can: true,
+      act: () => { st.thr.collapse = (st.thr.collapse + 1) % PRESTIGE_STEPS.length; g.sfxConfirm(); g.commit(true); },
+    });
+  } else {
+    rows.push({
+      key: 'acol', name: 'AUTO-COLLAPSE', sub: 'RUNS THE CYCLE WHILE YOU ARE AWAY',
+      owned: false, cost: B.fmt(B.big(AUTO.collapse)), can: afford(AUTO.collapse),
+      act: () => g.spendPhotons(AUTO.collapse, () => { st.auto.collapse = true; }),
+    });
+  }
+  const od = st.auto.overdrive;
+  const odCost = OVERDRIVE.base * Math.pow(OVERDRIVE.ratio, od);
+  rows.push({
+    key: 'od', name: `CORE OVERDRIVE ${od}/${OVERDRIVE.levels}`,
+    sub: `x${OVERDRIVE.mult} OUTPUT PER LEVEL`,
+    owned: od >= OVERDRIVE.levels, ownedLabel: 'MAX',
+    cost: B.fmt(B.big(odCost)), can: afford(odCost),
+    act: () => g.spendPhotons(odCost, () => { st.auto.overdrive++; }),
+  });
+  return rows;
+}
+
+function tauRows(g) {
+  const st = g.st;
+  const rows = [];
+  if (st.auto.dilate) {
+    rows.push({
+      key: 'adil', name: 'AUTO-DILATE', sub: `FIRES AT x${PRESTIGE_STEPS[st.thr.dilate]} YOUR BANK`,
+      owned: false, cost: 'CHANGE', can: true,
+      act: () => { st.thr.dilate = (st.thr.dilate + 1) % PRESTIGE_STEPS.length; g.sfxConfirm(); g.commit(true); },
+    });
+  } else {
+    rows.push({
+      key: 'adil', name: 'AUTO-DILATE', sub: 'RUNS THE DILATE CYCLE FOR YOU',
+      owned: false, cost: B.fmt(B.big(AUTO.dilate)), can: B.gte(st.tau.bank, B.big(AUTO.dilate)),
+      act: () => g.spendTau(AUTO.dilate, () => { st.auto.dilate = true; }),
+    });
+  }
+  for (const c of CHALLENGES) {
+    const done = !!st.done[c.id];
+    const active = st.challenge?.id === c.id;
+    rows.push({
+      key: `ch${c.id}`, name: c.name,
+      sub: done ? c.reward : active ? `TARGET 1e${Math.round(st.challenge.targetLog)} DEPTH` : `${c.handicap} -> ${c.reward}`,
+      owned: done, ownedLabel: 'DONE',
+      cost: active ? 'LEAVE' : 'ENTER', can: st.omega.total > 0,
+      act: () => {
+        if (active) E.exitChallenge(st);
+        else E.enterChallenge(st, c.id);
+        g.sfxConfirm();
+        g.commit(true);
+      },
+    });
+  }
+  return rows;
+}
+
+function omegaRows(g) {
+  const st = g.st;
+  const free = st.omega.total - st.omega.bore - st.omega.drift - st.omega.stasis;
+  const mk = (key, name, sub, sink, cap) => ({
+    key, name, sub, owned: false,
+    cost: `${st.omega[sink]}${cap ? `/${cap}` : ''}  +`,
+    can: free > 0 && (!cap || st.omega[sink] < cap),
+    act: () => { if (E.allocate(st, sink, 1)) { g.sfxConfirm(); g.commit(true); } },
+    minus: () => { if (E.allocate(st, sink, -1)) { g.sfxBack(); g.commit(true); } },
+  });
+  return [
+    mk('om_bore', 'BORE', `+1 DRIVE TIER — NOW ${st.tiers}`, 'bore', TIERS.max - TIERS.base),
+    mk('om_drift', 'DRIFT', `x3 OUTPUT EACH — NOW x${B.fmt(B.pow10(Math.log10(3) * st.omega.drift))}`, 'drift', 0),
+    mk('om_stasis', 'STASIS', `+24H AWAY CAP — NOW ${Math.round(E.awayCapSeconds(st) / 3600)}H`, 'stasis', AWAY.stasisMax),
+  ];
+}
+
+// =========================================================== AWAY PANEL
+
+export function drawAway(ctx, g, view, dt) {
+  const { ui, input, st } = g;
+  const pal = g.renderer.pal ?? g.renderer.palette(0);
+  const led = g.ledger;
+  const top = view.insetTop;
+  const bottom = view.vh - view.insetBottom;
+  if (!led) { g.screen = 'bore'; return; }
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(2,4,10,0.72)';
+  ctx.fillRect(0, 0, VW, view.vh);
+  ctx.restore();
+
+  // Lead with the fantasy, not the ledger.
+  txt(ctx, 'YOU FELL FOR', VW / 2, top + 90, 22, withAlpha('#FFFFFF', 0.6));
+  txt(ctx, humanDuration(led.seconds), VW / 2, top + 146, 44, '#FFFFFF', { weight: 900, outline: 6 });
+  txt(ctx, `${B.fmt(B.big(led.properSeconds))} SECONDS OF PROPER TIME`, VW / 2, top + 192, 22, '#8dffd0');
+
+  const listY = top + 226;
+  const listH = bottom - listY - 110;
+  const lines = [];
+  const gained = B.log10(B.add(B.ONE, led.depthAfter ?? st.depth)) - B.log10(B.add(B.ONE, led.depthBefore));
+  if (Number.isFinite(gained) && gained > 0) lines.push([`DEPTH GAINED`, `${gained.toFixed(1)} ORDERS OF MAGNITUDE`]);
+  if (led.collapsesRun > 0) lines.push(['COLLAPSES RUN', String(led.collapsesRun)]);
+  if (led.dilatesRun > 0) lines.push(['DILATES RUN', String(led.dilatesRun)]);
+  lines.push(['CLOCK', `x${E.dilation(st).toFixed(2)} PROPER TIME`]);
+  // What the tunnel itself gained while you were gone. This is the reason to
+  // look at the screen rather than the ledger.
+  if (led.bandAfter > led.bandBefore) {
+    lines.push(['DEPTH FIELD', `${led.bandBefore} -> ${led.bandAfter}`]);
+    for (const n of layerNamesBetween(led.bandBefore, led.bandAfter)) {
+      lines.push(['NEW IN THE BORE', n]);
+    }
+  }
+  if (led.capped) {
+    lines.push(['CAPPED AT', `${Math.round(E.awayCapSeconds(st) / 3600)} HOURS`]);
+  }
+  if (led.throttled) lines.push(['THROTTLED', 'CLOCK MOVED FASTER THAN TIME']);
+  if (g.save.clock?.suspect) lines.push(['NOTE', 'CLOCK DRIFT OBSERVED']);
+
+  const off = scrollers.away.begin(ctx, input, dt, 16, listY, VW - 32, listH, lines.length * 56 + 90);
+  lines.forEach(([k, v], i) => {
+    const y = listY + i * 56 - off;
+    scrim(ctx, 24, y, VW - 48, 48, 0.5);
+    txt(ctx, k, 44, y + 31, 17, withAlpha('#FFFFFF', 0.55), { align: 'left' });
+    txt(ctx, v, VW - 44, y + 31, 19, '#FFFFFF', { align: 'right' });
+  });
+  const noteY = listY + lines.length * 56 - off + 12;
+  txt(ctx, 'YOUR AWAY TIME RAN AT FULL RATE.', VW / 2, noteY + 18, 15, withAlpha('#FFFFFF', 0.45));
+  txt(ctx, 'AUTOBUYERS AND COLLAPSES RAN WHILE YOU WERE GONE.', VW / 2, noteY + 40, 15, withAlpha('#FFFFFF', 0.45));
+  scrollers.away.end(ctx);
+
+  // If the absence hit the cap and STASIS is unallocated, offer it right here —
+  // the exact moment the friction is felt.
+  const free = st.omega.total - st.omega.bore - st.omega.drift - st.omega.stasis;
+  if (led.capped && free > 0 && st.omega.stasis < AWAY.stasisMax) {
+    if (ui.button(ctx, input, dt, 'stasisnow', 28, bottom - 166, VW - 56, 70, '+24H AWAY CAP (1 OMEGA)', {
+      textSize: 22, stroke: '#ff7ae0', fill: '#2a1030', radius: 18, pitch: 78,
+    })) { E.allocate(st, 'stasis', 1); g.sfxConfirm(); g.commit(true); }
+  }
+
+  if (ui.button(ctx, input, dt, 'descend', 28, bottom - 84, VW - 56, 72, 'DESCEND', {
+    textSize: 30, stroke: pal.edge, fill: '#141d3a', radius: 18, pitch: 80, glow: 8,
+  })) { g.ledger = null; g.screen = 'bore'; g.sfxConfirm(); }
+}
+
+// =========================================================== SETTINGS
 
 export function drawSettings(ctx, g, view, dt) {
-  const { ui, input, save, t } = g;
-  const pal = g.renderer.palette(0);
-  bg(ctx, view, t, pal);
+  const { ui, input, save, st } = g;
+  const pal = g.renderer.pal ?? g.renderer.palette(0);
   const top = view.insetTop;
   const bottom = view.vh - view.insetBottom;
 
-  outlinedText(ctx, 'SETTINGS', VW / 2, top + 54, {
-    size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT,
-  });
+  ctx.save();
+  ctx.fillStyle = 'rgba(2,4,10,0.72)';
+  ctx.fillRect(0, 0, VW, view.vh);
+  ctx.restore();
+
+  txt(ctx, 'SETTINGS', VW / 2, top + 54, 46, '#FFFFFF', { weight: 900, outline: 5 });
 
   let y = top + 110;
   const row = 92; // >= MIN_TOUCH, so adjacent hit rects can never overlap
@@ -311,9 +455,8 @@ export function drawSettings(ctx, g, view, dt) {
   }
   y += row + 20;
 
-  outlinedText(ctx, `${save.runs || 0} RUNS · ${Math.round(save.totalDist || 0).toLocaleString()} TOTAL`, VW / 2, y, {
-    size: 18, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 2, font: FONT,
-  });
+  txt(ctx, `${st.collapses} COLLAPSES · ${st.dilates} DILATES · ${st.horizons} HORIZONS`,
+    VW / 2, y, 18, withAlpha('#FFFFFF', 0.4), { weight: 700, outline: 2 });
 
   if (g.confirmReset) {
     if (ui.button(ctx, input, dt, 'reset2', 28, bottom - 176, W, 72, 'ERASE EVERYTHING?', {
@@ -329,118 +472,7 @@ export function drawSettings(ctx, g, view, dt) {
     textSize: 30, stroke: pal.edge, fill: '#141d3a', radius: 18, pitch: 84,
   })) {
     g.confirmReset = false;
-    g.screen = 'title';
+    g.screen = 'bore';
     g.sfxBack();
   }
-}
-
-// ----------------------------------------------------------------- results
-
-export function drawResults(ctx, g, view, dt) {
-  const { ui, input, save, t, run } = g;
-  const pal = g.renderer.palette(run.dist);
-  const top = view.insetTop;
-  const bottom = view.vh - view.insetBottom;
-  const res = g.result;
-
-  ctx.save();
-  ctx.fillStyle = 'rgba(3,4,10,0.88)';
-  ctx.fillRect(0, 0, VW, view.vh);
-  ctx.restore();
-
-  outlinedText(ctx, res.newBest ? 'FURTHEST YET' : 'HULL SHATTERED', VW / 2, top + 52, {
-    size: 24, weight: 800, color: res.newBest ? '#FFD34F' : withAlpha('#FFFFFF', 0.5), outlineWidth: 3, font: FONT,
-  });
-  outlinedText(ctx, Math.round(g.countUp).toLocaleString(), VW / 2, top + 130, {
-    size: 88, weight: 900, color: res.newBest ? '#FFD34F' : '#FFFFFF', outlineWidth: 7, font: FONT,
-  });
-  outlinedText(ctx, `BEST ${Math.round(save.best || 0).toLocaleString()}`, VW / 2, top + 178, {
-    size: 20, weight: 700, color: withAlpha('#FFFFFF', 0.45), outlineWidth: 2, font: FONT,
-  });
-
-  ctx.save();
-  roundRect(ctx, 28, top + 206, VW - 56, 62, 16);
-  ctx.fillStyle = withAlpha(pal.edge, 0.10);
-  ctx.fill();
-  outlinedText(ctx, g.coach, VW / 2, top + 237, {
-    size: g.coach.length > 42 ? 18 : 21, weight: 800, color: pal.edge, outlineWidth: 0, font: FONT,
-  });
-  ctx.restore();
-
-  let y = top + 288;
-  const stats = [
-    ['TOP SPEED', String(Math.round(run.topSpeed))],
-    ['BEST CHAIN', String(run.bestCombo)],
-    ['GRAZES', String(run.grazes)],
-    ['GATES', String(run.gates)],
-    ['CLIPS', String(run.clips)],
-    ['SHARDS', `◆ ${res.shardsEarned}`],
-  ];
-  stats.forEach((st, i) => {
-    const col = i % 3;
-    const rowI = Math.floor(i / 3);
-    const w = (VW - 56 - 24) / 3;
-    const x = 28 + col * (w + 12);
-    const yy = y + rowI * 82;
-    roundRect(ctx, x, yy, w, 70, 12);
-    ctx.fillStyle = 'rgba(255,255,255,0.05)';
-    ctx.fill();
-    outlinedText(ctx, st[1], x + w / 2, yy + 28, { size: 26, weight: 900, color: '#FFFFFF', outlineWidth: 0, font: FONT });
-    outlinedText(ctx, st[0], x + w / 2, yy + 54, { size: 13, weight: 700, color: withAlpha('#FFFFFF', 0.4), outlineWidth: 0, font: FONT });
-  });
-  y += 178;
-
-  const againY = bottom - 190;
-  const rewards = res.missionsDone.map((m) => `MISSION · ${m.text}`);
-  const room = Math.max(0, Math.floor((againY - 10 - y) / 30));
-  for (const rw of rewards.slice(0, room)) {
-    ctx.save();
-    ctx.globalAlpha = 0.6 + 0.4 * Math.sin(t * 4);
-    outlinedText(ctx, rw, VW / 2, y + 14, { size: 18, weight: 800, color: '#FFD34F', outlineWidth: 2, font: FONT });
-    ctx.restore();
-    y += 30;
-  }
-
-  if (ui.button(ctx, input, dt, 'again', 32, againY, VW - 64, 100, 'AGAIN', {
-    textSize: 40, stroke: pal.edge, fill: '#141d3a', fillActive: '#22336b', glow: 22, radius: 24,
-  })) {
-    g.beginRun({ daily: g.isDaily });
-  }
-  if (ui.button(ctx, input, dt, 'menu', 32, bottom - 78, VW - 64, 66, 'MENU', {
-    textSize: 24, stroke: '#4a4570', fill: '#101024', radius: 16, pitch: 78,
-  })) {
-    g.screen = 'title';
-    g.sfxBack();
-  }
-}
-
-// ------------------------------------------------------------------- pause
-
-export function drawPause(ctx, g, view, dt) {
-  const { ui, input } = g;
-  const pal = g.renderer.palette(g.run ? g.run.dist : 0);
-  ctx.save();
-  ctx.fillStyle = 'rgba(3,4,10,0.82)';
-  ctx.fillRect(0, 0, VW, view.vh);
-  ctx.restore();
-
-  const cy = view.vh / 2;
-  panel(ctx, 60, cy - 220, VW - 120, 440, { blurGlow: 24, radius: 28 });
-  outlinedText(ctx, 'PAUSED', VW / 2, cy - 156, { size: 46, weight: 900, color: '#FFFFFF', outlineWidth: 5, font: FONT });
-
-  if (ui.button(ctx, input, dt, 'resume', 92, cy - 100, VW - 184, 92, 'RESUME', {
-    textSize: 32, stroke: pal.edge, fill: '#141d3a', radius: 20, pitch: 104,
-  })) g.resume();
-
-  if (ui.button(ctx, input, dt, 'restart', 92, cy + 4, VW - 184, 80, 'RESTART', {
-    textSize: 26, stroke: '#6a6aa0', fill: '#12142a', radius: 18, pitch: 92,
-  })) {
-    // Bank the run first: restarting must never be the one path that throws a
-    // record away.
-    g.finishRun();
-    g.beginRun({ daily: g.isDaily });
-  }
-  if (ui.button(ctx, input, dt, 'quit', 92, cy + 96, VW - 184, 80, 'QUIT TO MENU', {
-    textSize: 26, stroke: '#4a4570', fill: '#101024', radius: 18, pitch: 92,
-  })) g.endRunEarly();
 }

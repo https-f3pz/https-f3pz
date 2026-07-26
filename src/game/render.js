@@ -13,9 +13,9 @@
 // the less the picture can be trusted. The simulation is unaffected — all
 // collision is angular — so the view lies to the player and never to the game.
 
-import { VW, TUBE, WARP, SPEED, zoneBlend, speedFloor } from './config.js';
-import { arcsAt } from './track.js';
-import { mixHex, withAlpha, clamp, lerp } from '../core/draw.js';
+import { VW, TUBE, WARP, paletteBlend } from './config.js';
+import { ringGapFor } from './world.js';
+import { mixHex, withAlpha, clamp, lerp, shiftHue } from '../core/draw.js';
 
 const TAU = Math.PI * 2;
 
@@ -32,14 +32,24 @@ export class Renderer {
     this._pt = { x: 0, y: 0, s: 0 };
   }
 
+  // Palettes cycle rather than ending: eight of them, crossfading, with the
+  // whole set hue-rotated 47 degrees each complete cycle. gcd(47, 360) = 1, so
+  // it takes 360 cycles to land on a colour you have already seen. The old
+  // fixed zone list simply froze on its last entry, which is fine for a
+  // three-minute run and useless for a game measured in months.
   palette(dist) {
-    const b = zoneBlend(dist);
+    const b = paletteBlend(dist);
     const k = Math.round(b.k * 12) / 12;
+    const mix = (a, c) => {
+      const m = mixHex(a, c, k);
+      return b.hue ? shiftHue(m, b.hue) : m;
+    };
     return {
-      wall: mixHex(b.from.wall, b.to.wall, k),
-      edge: mixHex(b.from.edge, b.to.edge, k),
-      hazard: mixHex(b.from.hazard, b.to.hazard, k),
-      fog: mixHex(b.from.fog, b.to.fog, k),
+      wall: mix(b.from.wall, b.to.wall),
+      edge: mix(b.from.edge, b.to.edge),
+      hazard: mix(b.from.hazard, b.to.hazard),
+      fog: mix(b.from.fog, b.to.fog),
+      name: b.name,
     };
   }
 
@@ -130,8 +140,7 @@ export class Renderer {
     // at a readable rate instead of strobing. Doubling rather than scaling
     // means the surviving rings stay exactly where they were — every other one
     // simply drops out — so the tube never appears to slide underneath you.
-    const want = (speedFloor(run.dist) * 0.34) / TUBE.ringGap;
-    const gap = TUBE.ringGap * Math.pow(2, Math.max(0, Math.round(Math.log2(want))));
+    const gap = ringGapFor(run.speed);
     const startZ = Math.floor((this.camZ + TUBE.near * 0.5) / gap) * gap;
     const smear = opt.reduceGlow ? 0 : WARP.smear * this.w;
 
@@ -178,79 +187,6 @@ export class Renderer {
         ctx.strokeStyle = withAlpha(col, pass === 0 ? fade * 0.22 : fade * 0.75);
         ctx.lineWidth = (pass === 0 ? 4 : 1.6) + fade * this.w * 2.5;
         ctx.stroke();
-      }
-    }
-  }
-
-  // ------------------------------------------------------------ obstacles
-
-  obstacles(ctx, run, view, pal, opt) {
-    const t = run.z / 1000;
-    const rad = TUBE.radius;
-    const inner = rad * 0.68; // a wall band, not a disc — the bore must stay clear
-    const smear = opt.reduceGlow ? 0 : WARP.smear * this.w;
-
-    // Nearest last, so the thing about to hit you is drawn on top.
-    // Arcs are the most expensive thing in the frame, so they are culled well
-    // before the tube itself and only the nearest few get the smear pass.
-    const arcFar = TUBE.far * 0.62;
-    const list = this._list || (this._list = []);
-    list.length = 0;
-    for (const p of run.track.planes()) {
-      const dz = p.z - this.camZ;
-      // Anything nearer than the ship's own plane is already behind you, and
-      // at this focal length it would fill the entire screen.
-      if (dz < TUBE.near * 0.92 || dz > arcFar) continue;
-      list.push(p);
-    }
-    list.sort((a, b) => b.z - a.z);
-
-    for (const plane of list) {
-      const dz = plane.z - this.camZ;
-      const fade = 1 - clamp(dz / TUBE.far, 0, 1);
-      const arcs = arcsAt(plane, t, this._arcs);
-      const col = this.depthColour(plane.grazed ? '#ffd34f' : pal.hazard, dz, pal);
-      const nearEnough = dz < arcFar * 0.45;
-
-      for (let i = 0; i < arcs.length; i += 2) {
-        const c = arcs[i];
-        const half = arcs[i + 1];
-        const steps = nearEnough ? 5 : 3;
-
-        for (let pass = smear > 0.02 && nearEnough ? 0 : 1; pass < 2; pass++) {
-          const zz = pass === 0 ? plane.z - run.speed * 0.016 * smear * 5 : plane.z;
-          ctx.beginPath();
-          let ok = true;
-          for (let k = 0; k <= steps; k++) {
-            const a = c - half + (half * 2 * k) / steps;
-            const p = this.project(a, rad, zz, run.angle);
-            if (p.s < 0) {
-              ok = false;
-              break;
-            }
-            if (k === 0) ctx.moveTo(p.x, p.y);
-            else ctx.lineTo(p.x, p.y);
-          }
-          if (!ok) continue;
-          for (let k = steps; k >= 0; k--) {
-            const a = c - half + (half * 2 * k) / steps;
-            const p = this.project(a, inner, zz, run.angle);
-            if (p.s < 0) {
-              ok = false;
-              break;
-            }
-            ctx.lineTo(p.x, p.y);
-          }
-          if (!ok) continue;
-          ctx.closePath();
-          ctx.fillStyle = withAlpha(col, (pass === 0 ? 0.16 : 0.55) * (0.25 + fade * 0.75));
-          ctx.fill();
-          if (pass === 1) {
-            ctx.strokeStyle = withAlpha(col, 0.3 + fade * 0.7);
-            ctx.lineWidth = 1.5 + fade * 2;
-            ctx.stroke();
-          }
-        }
       }
     }
   }

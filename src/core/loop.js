@@ -29,6 +29,7 @@ export class Loop {
     this.elapsed = 0; // total scaled sim time
     this.frame = 0;
     this.fps = 60;
+    this.lastReal = 0;
     this._fpsAcc = 0;
     this._fpsFrames = 0;
   }
@@ -78,6 +79,11 @@ export class Loop {
 
     // Ease toward the slow-mo target so entering/leaving it isn't a jolt.
     this.timeScale += (this.targetScale - this.timeScale) * Math.min(1, real * 12);
+
+    // Real elapsed seconds, before hitstop and slow-motion touch it. An idle
+    // economy must advance on this and not on scaled sim time, or a screen
+    // shake would quietly cost the player production.
+    this.lastReal = real;
 
     let simTime = real;
     if (this.hitstop > 0) {

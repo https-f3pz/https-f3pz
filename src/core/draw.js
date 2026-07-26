@@ -103,6 +103,45 @@ export function withAlpha(hex, alpha) {
   return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
 }
 
+/**
+ * Rotate a hex colour's hue, keeping saturation and lightness. Lets one small
+ * hand-tuned palette set become an endless supply of them: rotating by a value
+ * coprime with 360 means the cycle takes hundreds of repetitions to land back
+ * on a colour the player has already seen.
+ */
+export function shiftHue(hex, deg) {
+  if (!deg) return hex;
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h[0] + h[0] + h[1] + h[1] + h[2] + h[2] : h;
+  let r = parseInt(full.slice(0, 2), 16) / 255;
+  let g = parseInt(full.slice(2, 4), 16) / 255;
+  let b = parseInt(full.slice(4, 6), 16) / 255;
+  const mx = Math.max(r, g, b);
+  const mn = Math.min(r, g, b);
+  const l = (mx + mn) / 2;
+  let hh = 0;
+  let s = 0;
+  if (mx !== mn) {
+    const d = mx - mn;
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if (mx === r) hh = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (mx === g) hh = ((b - r) / d + 2) / 6;
+    else hh = ((r - g) / d + 4) / 6;
+  }
+  hh = (((hh + deg / 360) % 1) + 1) % 1;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const chan = (t) => {
+    let x = ((t % 1) + 1) % 1;
+    if (x < 1 / 6) return p + (q - p) * 6 * x;
+    if (x < 1 / 2) return q;
+    if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+    return p;
+  };
+  const hx = (v) => Math.round(Math.min(255, Math.max(0, v * 255))).toString(16).padStart(2, '0');
+  return `#${hx(chan(hh + 1 / 3))}${hx(chan(hh))}${hx(chan(hh - 1 / 3))}`;
+}
+
 export function mixHex(a, b, t) {
   const ha = a.replace('#', '');
   const hb = b.replace('#', '');

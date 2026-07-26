@@ -1,21 +1,32 @@
-// REDSHIFT — top-level state machine.
+// The controller.
 //
-// Owns the virtual-space transform, the screen stack, the run lifecycle, and
-// the translation of simulation events into sound and shake. The Run knows
-// nothing about screens; the screens know nothing about the simulation.
+// Owns layout, input translation, the economy clock, persistence and the screen
+// dispatch. There is no run to start, pause or finish — the bore is always
+// falling, and the app boots straight into it.
+//
+// The one subtlety worth stating up front: the economy advances on REAL elapsed
+// time, not on the loop's scaled simulation time. Hitstop and slow-motion are
+// presentation effects, and they must never rob the player of production.
 
-import { VW, VH_MIN, VH_MAX, SPEED, WARP } from './config.js';
-import { Run } from './run.js';
+import { VW, VH_MIN, VH_MAX, AUTO, OVERDRIVE, GOV_STEPS, PRESTIGE_STEPS, CHALLENGES, TIERS, LADDER, AWAY } from './config.js';
 import { Renderer } from './render.js';
-import { drawHud } from './hud.js';
-import { drawTitle, drawShip, drawSettings, drawResults, drawPause } from './screens.js';
+import { drawBore, drawBoards, drawAway, drawSettings } from './screens.js';
 import { UI } from '../core/widgets.js';
-import { hashSeed, randomSeedWord } from '../core/rng.js';
-import { load, save as writeSave, reset as resetSave } from '../core/storage.js';
-import { recordRun, coachingLine, dailySeed, todayKey, buyUpgrade } from './meta.js';
+import { load, save as writeSave, reset as resetSave, flushNow } from '../core/storage.js';
 import { setHaptics, buzz } from '../core/input.js';
 import { clamp } from '../core/draw.js';
 import * as audio from '../core/audio.js';
+import * as B from '../core/big.js';
+import * as E from './economy.js';
+import { makeWorld, updateWorld, flashBuy, flashPrestige, scaleOf, bandOf } from './world.js';
+import { drawLayers, drawEscorts, spawnDust, layerNamesBetween } from './layers.js';
+import { AwayClock, humanDuration } from '../core/awaytime.js';
+
+/** Economy steps per second. Fine enough that autobuyers feel instant. */
+const TICK_HZ = 20;
+/** How often the save is written, and how often it is flushed to disk. */
+const SAVE_EVERY = 10;
+const FLUSH_EVERY = 30;
 
 export class Game {
   constructor({ ctx, view, input, fx, loop }) {
@@ -28,16 +39,24 @@ export class Game {
     this.save = load();
     this.ui = new UI();
     this.renderer = new Renderer();
+    this.clock = new AwayClock();
 
-    this.screen = 'title'; // title | ship | settings | play | results | pause
+    this.screen = 'bore'; // bore | boards | away | settings
+    this.board = 0; // 0 photon, 1 tau, 2 horizon
     this.t = 0;
-    this.run = null;
-    this.result = null;
-    this.countUp = 0;
-    this.coach = '';
+    this.acc = 0;
+    this.saveAcc = 0;
+    this.flushAcc = 0;
     this.confirmReset = false;
-    this.isDaily = false;
-    this.recorded = false;
+    this.banner = '';
+    this.bannerT = 0;
+    this.ledger = null;
+    this.primeCache = null;
+    this.primeAt = -1;
+
+    this.st = E.deserialize(this.save.economy);
+    this.world = makeWorld();
+    this.lastBand = -1;
 
     this.view = { vw: VW, vh: 1300, scale: 1, ox: 0, oy: 0, insetTop: 0, insetBottom: 0 };
     this.input = { taps: [], presses: [], releases: [], cancels: [], pointers: new Map(), primary: null };
@@ -49,6 +68,10 @@ export class Game {
   init() {
     this.onResize(this.rawView);
     this.applySettings();
+    this.resolveAway();
+    // Seed the visual clock so a returning player does not watch it wind up.
+    updateWorld(this.world, this.st, 0);
+    this.lastBand = this.world.band;
   }
 
   // --------------------------------------------------------------- layout
@@ -64,7 +87,6 @@ export class Game {
     this.view.oy = (view.h - vh * scale) / 2;
     this.view.insetTop = view.safe.top / scale;
     this.view.insetBottom = view.safe.bottom / scale;
-    if (this.run) this.run.layout(this.view);
   }
 
   toVirtual(p) {
@@ -112,283 +134,239 @@ export class Game {
     writeSave(patch);
   }
 
-  buy(id) {
-    return buyUpgrade(this.save, id);
+  /** Snapshot the economy into the save blob. Cheap; called on a timer. */
+  commit(flush = false) {
+    writeSave({
+      economy: E.serialize(this.st),
+      clock: this.clock.stamp(this.save.clock),
+    });
+    if (flush) flushNow();
   }
 
   wipeSave() {
     this.save = resetSave();
+    this.st = E.newState();
+    this.world = makeWorld();
     this.confirmReset = false;
     this.applySettings();
     this.sfxBack();
   }
 
-  sfxConfirm() {
-    audio.sfx.uiConfirm();
+  sfxConfirm() { audio.sfx.uiConfirm(); }
+  sfxBack() { audio.sfx.uiBack(); }
+
+  // ------------------------------------------------------------- offline
+
+  /**
+   * Credit an absence and open the away panel. Called on boot, and again
+   * whenever the page comes back from being hidden for more than a few
+   * seconds — a backgrounded tab is an absence and must be paid like one.
+   */
+  resolveAway(minSeconds = 0) {
+    const bandBefore = bandOf(scaleOf(this.st));
+    const led = E.resolveOffline(this.st, this.save.clock);
+    led.bandBefore = bandBefore;
+    led.bandAfter = bandOf(scaleOf(this.st));
+    // Persist the new high-water mark and bucket immediately, so reopening
+    // cannot double-credit the same interval.
+    writeSave({
+      clock: { wall: Date.now(), mono: 0, high: led.high ?? Date.now(), budget: led.budget, suspect: !!this.save.clock?.suspect },
+      economy: E.serialize(this.st),
+    });
+    flushNow();
+    if (led.seconds > Math.max(minSeconds, 60) && !led.backwards && !led.missing) {
+      this.ledger = led;
+      this.screen = 'away';
+    }
+    return led;
   }
 
-  sfxBack() {
-    audio.sfx.uiBack();
-  }
-
-  // ------------------------------------------------------------ lifecycle
-
-  beginRun({ daily = false } = {}) {
-    // Replaying a banked daily is practice, not a second scored attempt.
-    if (daily && this.save.daily?.date === todayKey() && this.save.daily?.locked) daily = false;
-    this.isDaily = daily;
-    this.recorded = false;
-    this.confirmReset = false;
-
-    const seed = daily ? dailySeed() : hashSeed(randomSeedWord() + Date.now());
-    this.run = new Run({ seed, save: this.save, loop: this.loop, view: this.view, daily });
-    this.run.tip = '';
-    this.run.tipT = 0;
-    this.run.banner = '';
-    this.run.bannerT = 0;
-    this.run.bestCleanGates = 0;
-
-    this.fx.clear();
-    this.loop.clearSlowmo();
-    this.loop.hitstop = 0;
-    this.screen = 'play';
-    audio.unlock();
-    audio.startMusic();
-    this.maybeTip('DRAG TO ROLL · SKIM THE EDGES', 3.4);
-  }
-
-  endRunEarly() {
-    this.finishRun();
-    this.screen = 'title';
-    audio.stopMusic();
-    audio.stopWhoosh();
-  }
-
-  finishRun() {
-    if (!this.run || this.recorded) return;
-    this.recorded = true;
-    this.result = recordRun(this.save, this.run, { isDaily: this.isDaily });
-    this.coach = coachingLine(this.run);
-  }
-
-  debugKill() {
-    if (this.run && this.screen === 'play') this.run.killNow();
-  }
-
-  startRun() {
-    this.beginRun({ daily: false });
-  }
-
-  snapshot() {
-    const r = this.run;
-    return {
-      state: this.state,
-      screen: this.screen,
-      runTime: r ? r.dist / Math.max(1, SPEED.start) : 0,
-      dist: r ? Math.round(r.dist) : 0,
-      score: r ? Math.round(r.score) : 0,
-      speed: r ? Math.round(r.speed) : 0,
-      warp: r ? Math.round(r.warp * 100) : 0,
-      combo: r ? r.combo : 0,
-      gates: r ? r.gates : 0,
-      clips: r ? r.clips : 0,
-      fps: Math.round(this.loop.fps),
-    };
-  }
+  // --------------------------------------------------------------- economy
 
   get state() {
-    if (this.screen === 'play') return this.run && this.run.dead ? 'over' : 'play';
-    if (this.screen === 'results') return 'over';
-    return this.screen === 'pause' ? 'pause' : 'menu';
+    // main.js reloads for a service-worker update only when idle. The away
+    // resolve must never be interrupted mid-ledger, so it reports as busy.
+    return this.screen === 'away' ? 'play' : 'menu';
   }
 
   onBlur() {
-    if (this.screen === 'play' && this.run && !this.run.dead) this.pause();
+    this.commit(true);
   }
 
-  pause() {
-    if (this.screen !== 'play') return;
-    this.screen = 'pause';
-    audio.stopMusic(0.15);
-    audio.stopWhoosh();
+  banner_(text, dur = 1.6) {
+    this.banner = text;
+    this.bannerT = dur;
   }
 
-  resume() {
-    if (this.screen !== 'pause') return;
-    this.screen = 'play';
-    this.loop.last = performance.now();
-    audio.startMusic();
-  }
-
-  maybeTip(text, dur) {
-    if (this.save.seenTips[text]) return;
-    this.save.seenTips[text] = true;
-    writeSave({ seenTips: this.save.seenTips });
-    if (this.run) {
-      this.run.tip = text;
-      this.run.tipT = dur;
+  /** The single best purchase right now, recomputed at 4 Hz, never per frame. */
+  prime() {
+    if (this.t - this.primeAt > 0.25) {
+      this.primeAt = this.t;
+      this.primeCache = E.primePick(this.st);
     }
+    return this.primeCache;
   }
 
-  banner(text, dur = 1.4) {
-    if (!this.run) return;
-    this.run.banner = text;
-    this.run.bannerT = dur;
+  buyTier(k, n) {
+    const got = E.buy(this.st, k, n, { full: true });
+    if (got > 0) {
+      flashBuy(this.world);
+      audio.sfx.gem();
+      buzz(8);
+      this.primeAt = -1;
+    }
+    return got;
   }
 
-  // ------------------------------------------- per-frame discrete input
+  buyMaxAll() {
+    const got = E.maxAll(this.st);
+    if (got > 0) {
+      flashBuy(this.world);
+      audio.sfx.attach();
+      buzz(12);
+      this.primeAt = -1;
+    }
+    return got;
+  }
+
+  doCollapse() {
+    if (!E.canCollapse(this.st)) return;
+    const g = E.collapse(this.st);
+    flashPrestige(this.world);
+    audio.sfx.best();
+    audio.duckMusic?.();
+    this.fx.flash('#ffd34f', 0.4, 3);
+    this.banner_(`COLLAPSE — +${B.fmt(g)} PHOTONS`);
+    buzz([20, 40]);
+    this.commit(true);
+  }
+
+  doDilate() {
+    if (!E.canDilate(this.st)) return;
+    const g = E.dilate(this.st);
+    flashPrestige(this.world);
+    audio.sfx.whipcrack();
+    audio.duckMusic?.();
+    this.fx.flash('#8dffd0', 0.5, 2.4);
+    this.banner_(`DILATE — +${B.fmt(g)} PROPER TIME`);
+    buzz([30, 60]);
+    this.commit(true);
+  }
+
+  doHorizon() {
+    if (!E.canHorizon(this.st)) return;
+    const n = E.horizon(this.st);
+    flashPrestige(this.world);
+    audio.sfx.death();
+    audio.duckMusic?.();
+    this.fx.flash('#ffffff', 0.6, 1.8);
+    this.banner_(`EVENT HORIZON — +${n} OMEGA`);
+    buzz([30, 60, 100]);
+    this.commit(true);
+  }
+
+  /** Photon-board purchases. Returns true if something was bought. */
+  spendPhotons(cost, apply) {
+    const c = B.big(cost);
+    if (B.lt(this.st.photons.bank, c)) return false;
+    this.st.photons.bank = B.sub(this.st.photons.bank, c);
+    apply();
+    audio.sfx.uiConfirm();
+    buzz(12);
+    this.commit(true);
+    return true;
+  }
+
+  spendTau(cost, apply) {
+    const c = B.big(cost);
+    if (B.lt(this.st.tau.bank, c)) return false;
+    this.st.tau.bank = B.sub(this.st.tau.bank, c);
+    apply();
+    audio.sfx.uiConfirm();
+    buzz(12);
+    this.commit(true);
+    return true;
+  }
+
+  // ----------------------------------------------------------------- frame
 
   beginFrame() {
     this.syncInput();
-    if (this.screen !== 'play' || !this.run || this.run.dead) return;
-    // Pause sits in the top-left corner, clear of the play surface.
-    const pb = { x: 0, y: this.view.insetTop, w: 110, h: 110 };
-    for (const p of this.input.presses) {
-      if (p.x >= pb.x && p.x <= pb.x + pb.w && p.y >= pb.y && p.y <= pb.y + pb.h) {
-        this.pause();
-        return;
-      }
-    }
+    this.clock.tick();
   }
-
-  // --------------------------------------------------------------- update
 
   update(dt) {
     this.t += dt;
     this.renderer.t = this.t;
     this.watchQuality();
+    if (this.bannerT > 0) this.bannerT -= dt;
 
-    if (this.screen === 'play') this.updatePlay(dt);
-    else if (this.screen === 'results') {
-      const target = this.run ? this.run.dist : 0;
-      if (this.countUp < target) {
-        this.countUp = Math.min(target, this.countUp + Math.max(target / 0.9, 400) * dt);
+    // The economy runs on REAL time at a fixed rate. `dt` here is the loop's
+    // scaled sim time, which hitstop and slow-mo deliberately distort — using
+    // it would let a screen-shake cost the player production.
+    const real = Math.min(0.25, this.loop.lastReal ?? dt);
+    this.acc += real;
+    const stepDt = 1 / TICK_HZ;
+    let steps = 0;
+    while (this.acc >= stepDt && steps < 8) {
+      E.step(this.st, E.properTime(this.st, stepDt));
+      this.acc -= stepDt;
+      steps++;
+    }
+    if (steps >= 8) this.acc = 0;
+    this.drainEvents();
+
+    updateWorld(this.world, this.st, real);
+    if (this.world.band > this.lastBand) {
+      // Bands crossed while the player was away are reported on the away panel
+      // instead; firing ten full-screen events at once on resume is a mess.
+      if (this.screen === 'away') this.lastBand = this.world.band;
+      else this.onBand(this.world.band);
+    }
+
+    spawnDust(this.fx, this.renderer, this.world, this.renderer.pal ?? { edge: '#57e0ff' }, real);
+    this.fx.update(dt);
+
+    this.saveAcc += real;
+    this.flushAcc += real;
+    if (this.saveAcc >= SAVE_EVERY) {
+      this.saveAcc = 0;
+      this.commit(this.flushAcc >= FLUSH_EVERY);
+      if (this.flushAcc >= FLUSH_EVERY) this.flushAcc = 0;
+    }
+  }
+
+  drainEvents() {
+    for (const ev of this.st.events) {
+      if (ev.type === 'milestone') {
+        audio.sfx.milestone?.();
+        this.fx.ring(this.renderer.cx, this.renderer.cy, 40, 220, '#ffd34f', 0.4, 3);
+      } else if (ev.type === 'collapse' || ev.type === 'dilate' || ev.type === 'horizon') {
+        flashPrestige(this.world);
       }
     }
-    this.fx.update(dt);
+    this.st.events.length = 0;
+  }
+
+  /** A band crossing is a full-screen event and, sometimes, a new layer. */
+  onBand(band) {
+    const names = layerNamesBetween(this.lastBand, band);
+    this.lastBand = band;
+    this.fx.flash('#ffffff', 0.35, 3);
+    this.fx.ring(this.renderer.cx, this.renderer.cy, 20, 420, '#ffffff', 0.6, 5);
+    this.fx.burst(this.renderer.cx, this.renderer.cy, 24, { color: '#ffffff', speed: 320, life: 0.8 });
+    audio.sfx.biome();
+    audio.duckMusic?.();
+    this.banner_(names.length ? `${names[0]} ONLINE` : `DEPTH FIELD ${band}`, 2.2);
   }
 
   // A device that cannot hold the frame should lose an effect, not the game.
   watchQuality() {
     const fps = this.loop.fps;
-    if (fps < 52) {
-      this.slowFrames++;
-      this.fastFrames = 0;
-    } else if (fps > 58) {
-      this.fastFrames++;
-      this.slowFrames = 0;
-    }
-    if (this.slowFrames > 45 && this.opt.quality === 1) {
-      this.opt.quality = 0;
-      this.slowFrames = 0;
-    } else if (this.fastFrames > 240 && this.opt.quality === 0) {
-      this.opt.quality = 1;
-      this.fastFrames = 0;
-    }
-  }
-
-  updatePlay(dt) {
-    const run = this.run;
-    if (!run) return;
-
-    if (run.dead) {
-      run.update(dt, null);
-      this.handleEvents();
-      const since = performance.now() - (this.deathAt ?? performance.now());
-      if (since > 600) this.loop.clearSlowmo();
-      else this.loop.slowmo(0.3);
-      if (since > 1400 && this.screen === 'play') {
-        this.finishRun();
-        this.countUp = 0;
-        this.screen = 'results';
-        this.loop.clearSlowmo();
-      }
-      return;
-    }
-
-    const id = this.input.primary;
-    const p = id != null ? this.input.pointers.get(id) : null;
-    run.update(dt, p ? { x: p.x, y: p.y } : null);
-    run.bestCleanGates = Math.max(run.bestCleanGates ?? 0, run.cleanGates);
-    this.handleEvents();
-
-    if (run.tipT > 0) run.tipT -= dt;
-    if (run.bannerT > 0) run.bannerT -= dt;
-
-    // The whoosh and the music both ride the warp, so the mix is a second
-    // speed readout for anyone not looking at the bar.
-    audio.setWhoosh(run.speed * 0.62);
-    audio.setIntensity(run.warp);
-
-    // Above the shake threshold the frame itself starts to buzz — the last
-    // and least subtle of the velocity distortions.
-    if (run.warp > WARP.shakeAt) {
-      this.fx.shake((run.warp - WARP.shakeAt) * 10, 14);
-    }
-
-    if (run.combo >= 4) this.maybeTip('CHAINED GRAZES ARE WORTH FAR MORE', 2.8);
-    if (run.warp > 0.6) this.maybeTip('THE VIEW IS LYING NOW — TRUST THE GAPS', 3.0);
-    // The two halves of the loop, taught the moment each one first bites.
-    if (run.clips >= 1 && run.grazes === 0) this.maybeTip('ONLY NEAR MISSES REPAIR THE HULL', 3.0);
-    if (run.warp >= run.shatter) this.maybeTip('PAST THE MARK, ONE SCRAPE ENDS IT', 3.0);
-  }
-
-  handleEvents() {
-    const run = this.run;
-    const fx = this.fx;
-    const pal = this.renderer.palette(run.dist);
-
-    for (const ev of run.events) {
-      switch (ev.type) {
-        case 'graze':
-          audio.sfx.graze(ev.a);
-          fx.shake(2.5, 10);
-          if (ev.a % 10 === 0) {
-            this.banner(`CHAIN ×${ev.a}`, 0.9);
-            fx.flash('#FFFFFF', 0.18, 8);
-            buzz(14);
-          }
-          break;
-
-        case 'clip':
-          audio.sfx.scrape();
-          fx.shake(14, 5);
-          fx.flash('#ff2020', 0.3, 7);
-          break;
-
-        case 'milestone':
-          audio.sfx.milestone();
-          this.banner(ev.a.toLocaleString(), 1.0);
-          break;
-
-        case 'zone':
-          audio.sfx.biome();
-          this.banner(ev.a, 1.8);
-          fx.flash('#FFFFFF', 0.35, 5);
-          fx.shake(9, 4);
-          break;
-
-        case 'best':
-          audio.sfx.best();
-          this.banner('NEW RECORD', 1.4);
-          fx.flash('#FFD34F', 0.35, 6);
-          buzz(24);
-          break;
-
-        case 'death':
-          this.deathAt = performance.now();
-          audio.sfx.death();
-          audio.stopMusic(0.12);
-          audio.stopWhoosh();
-          fx.shake(24, 2.4);
-          fx.flash('#FFFFFF', 0.55, 6);
-          break;
-
-        default:
-          break;
-      }
-    }
-    run.events.length = 0;
+    if (fps < 52) { this.slowFrames++; this.fastFrames = 0; }
+    else if (fps > 58) { this.fastFrames++; this.slowFrames = 0; }
+    if (this.slowFrames > 45 && this.opt.quality === 1) { this.opt.quality = 0; this.slowFrames = 0; }
+    else if (this.fastFrames > 240 && this.opt.quality === 0) { this.opt.quality = 1; this.fastFrames = 0; }
   }
 
   // ---------------------------------------------------------------- render
@@ -407,36 +385,76 @@ export class Game {
     this.ui.begin();
     const dt = Math.min(0.05, 1 / Math.max(20, this.loop.fps));
 
-    if (this.screen === 'title') drawTitle(ctx, this, v, dt);
-    else if (this.screen === 'ship') drawShip(ctx, this, v, dt);
+    this.drawTunnel(ctx, v);
+
+    if (this.screen === 'boards') drawBoards(ctx, this, v, dt);
+    else if (this.screen === 'away') drawAway(ctx, this, v, dt);
     else if (this.screen === 'settings') drawSettings(ctx, this, v, dt);
-    else this.renderRun(ctx, v, dt);
+    else drawBore(ctx, this, v, dt);
 
     this.ui.end(dt);
     ctx.restore();
   }
 
-  renderRun(ctx, v, dt) {
-    const run = this.run;
-    if (!run) return;
+  /** The tunnel is the background of every screen, always live. */
+  drawTunnel(ctx, v) {
     const R = this.renderer;
-    const pal = R.palette(run.dist);
-    R.setup(run, v);
+    const w = this.world;
+    const pal = R.palette(w.dist);
+    this.renderer.pal = pal;
+    R.setup(w, v);
 
     ctx.save();
     ctx.translate(this.fx.shakeX, this.fx.shakeY);
-    R.background(ctx, run, v, pal);
-    R.tube(ctx, run, v, pal, this.opt);
-    R.obstacles(ctx, run, v, pal, this.opt);
-    R.ship(ctx, run, v, pal);
+    R.background(ctx, w, v, pal);
+    R.tube(ctx, w, v, pal, this.opt);
+    drawLayers(ctx, R, w, this.st, v, pal, this.opt);
+    R.ship(ctx, w, v, pal);
+    drawEscorts(ctx, R, w, this.st, pal);
     this.fx.drawParticles(ctx);
     ctx.restore();
 
-    R.overlays(ctx, run, v, pal, this.opt);
+    R.overlays(ctx, w, v, pal, this.opt);
+    this.fx.drawRings(ctx);
     this.fx.drawFlash(ctx, VW, v.vh);
+  }
 
-    if (this.screen === 'play' || this.screen === 'pause') drawHud(ctx, run, v, pal, this.opt, this.t);
-    if (this.screen === 'results') drawResults(ctx, this, v, dt);
-    else if (this.screen === 'pause') drawPause(ctx, this, v, dt);
+  // ----------------------------------------------------------- debug hooks
+  // tools/playtest.mjs drives the game through these. Keep them.
+
+  snapshot() {
+    return {
+      state: this.state,
+      screen: this.screen,
+      depth: B.fmt(this.st.depth),
+      logDepth: B.log10(this.st.depth),
+      rate: B.fmt(E.rate(this.st)),
+      photons: B.fmt(this.st.photons.bank),
+      tau: B.fmt(this.st.tau.bank),
+      omega: this.st.omega.total,
+      tiers: this.st.tiers,
+      owned: this.st.owned.slice(1, this.st.tiers + 1),
+      collapses: this.st.collapses,
+      warp: this.world.warp,
+      band: this.world.band,
+      fps: Math.round(this.loop.fps),
+    };
+  }
+
+  debugGrant(logDepth) {
+    this.st.depth = B.pow10(logDepth);
+  }
+
+  /** Advance the economy by `seconds` of wall time, in offline-sized chunks. */
+  debugAdvance(seconds) {
+    let left = Math.max(0, seconds);
+    while (left > 0) {
+      const w = Math.min(60, left);
+      left -= w;
+      E.step(this.st, E.properTime(this.st, w));
+    }
+    this.st.events.length = 0;
+    updateWorld(this.world, this.st, 0);
+    this.lastBand = this.world.band;
   }
 }

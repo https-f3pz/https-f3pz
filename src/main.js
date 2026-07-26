@@ -83,8 +83,14 @@ document.addEventListener('visibilitychange', () => {
     flushNow();
   } else {
     audio.resume();
-    // Rebase the clock so the loop doesn't try to simulate the time away.
+    const gap = (performance.now() - loop.last) / 1000;
+    // Rebase the clock so the loop doesn't try to simulate the time away in
+    // one enormous frame.
     loop.last = performance.now();
+    // A backgrounded tab IS an absence, and must be paid like one. Without
+    // this, twenty minutes with the app open behind another one earns nothing
+    // at all — the clock was rebased and the economy simply skipped it.
+    if (gap > 5) game.resolveAway(gap);
   }
 });
 window.addEventListener('blur', () => game.onBlur());
@@ -125,6 +131,8 @@ window.__GAME__ = {
   input,
   audio,
   debugSnapshot: () => game.snapshot(),
-  debugKill: () => game.debugKill(),
-  debugStart: (seed) => game.startRun(seed),
+  // Tools drive the economy through these: grant depth, then advance the
+  // simulation by an arbitrary span without waiting for it in real time.
+  debugGrant: (logDepth) => game.debugGrant(logDepth),
+  debugAdvance: (seconds) => game.debugAdvance(seconds),
 };

@@ -71,8 +71,18 @@ export class AwayClock {
   }
 
   /** The timestamp to persist. */
-  stamp() {
-    return { wall: Date.now(), mono: Math.round(now()) };
+  stamp(prev) {
+    const wall = Date.now();
+    return {
+      wall,
+      mono: Math.round(now()),
+      // The furthest forward the clock has ever been seen. Credit is measured
+      // from this, not from `wall`, so winding the clock back and forth is
+      // worth exactly nothing.
+      high: Math.max(wall, Number(prev?.high) || 0),
+      budget: Number(prev?.budget),
+      suspect: this.suspect || !!prev?.suspect,
+    };
   }
 }
 
@@ -86,13 +96,14 @@ function now() {
  * @param saved     the {wall, mono} written when the game was last closed
  * @param opts.cap  maximum seconds to credit (default AWAY_CAP)
  * @param opts.now  injectable clock, for tests
- * @returns {{seconds, rawSeconds, capped, backwards, missing}}
+ * @returns {{seconds, rawSeconds, capped, backwards, missing, high}}
  *
  *   seconds     what to actually credit
  *   rawSeconds  what the wall clock claimed, before capping
  *   capped      the absence was truncated
- *   backwards   the clock moved backwards; nothing credited
+ *   backwards   the clock is behind ground already credited; nothing given
  *   missing     no usable timestamp, e.g. a brand new save
+ *   high        the new high-water mark to persist
  */
 export function resolveAway(saved, opts = {}) {
   const cap = opts.cap ?? AWAY_CAP;
@@ -105,7 +116,14 @@ export function resolveAway(saved, opts = {}) {
     return out;
   }
 
-  const raw = (nowWall - wall) / 1000;
+  // Measure from the HIGH-WATER MARK, not from the last close. Without a
+  // server there is no way to tell "eight hours passed" from "the user moved
+  // the clock eight hours", and pretending otherwise is theatre. What can be
+  // guaranteed is that time is only ever paid for ONCE: winding the clock back
+  // and forward again crosses ground already credited, and earns nothing.
+  const from = Math.max(wall, Number(saved.high) || 0);
+  const raw = (nowWall - from) / 1000;
+  out.high = Math.max(from, nowWall);
   if (!Number.isFinite(raw)) {
     out.missing = true;
     return out;

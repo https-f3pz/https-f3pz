@@ -161,31 +161,44 @@ async function main() {
 
   if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '01-menu.png') });
 
-  // ------------------------------------------------------------ start run
-  // Ask the game where DIVE actually is rather than hardcoding a pixel: the
-  // button has moved twice already and a stale constant fails as a silent
-  // "the game never started".
-  const diveAt = await page.evaluate(() => {
+  // ------------------------------------------------------- the idle loop
+  // There is no run to start — the bore is always falling. What must be true
+  // is that depth climbs on its own, that a tap buys something, and that the
+  // ladder responds.
+  const boot = await page.evaluate(() => window.__GAME__?.debugSnapshot?.());
+  check('boots straight into the bore', boot?.screen === 'bore', `screen=${boot?.screen}`);
+
+  await page.waitForTimeout(1200);
+  const grown = await page.evaluate(() => window.__GAME__?.debugSnapshot?.());
+  check('depth climbs with no input at all',
+    grown && grown.logDepth > (boot?.logDepth ?? 0),
+    `1e${(boot?.logDepth ?? 0).toFixed(2)} -> 1e${grown?.logDepth?.toFixed(2)}`);
+
+  // PRIME sits at a known offset from the bottom; ask the game rather than
+  // hardcoding a pixel, which has silently broken this harness twice before.
+  const primeAt = await page.evaluate(() => {
     const v = window.__GAME__.game.view;
-    const playY = v.vh - v.insetBottom - 76 - 16 - 104;
-    return { x: v.ox + (720 / 2) * v.scale, y: v.oy + (playY + 52) * v.scale };
+    const y = v.vh - v.insetBottom - 168 + 38;
+    return { x: v.ox + (720 / 2) * v.scale, y: v.oy + y * v.scale };
   });
-  await tap(page, diveAt.x, diveAt.y);
-  await page.waitForTimeout(400);
-  let state = await page.evaluate(() => window.__GAME__?.state);
-  check('tap starts a run', state === 'play', `state=${state}`);
+  await tap(page, primeAt.x, primeAt.y);
+  await page.waitForTimeout(300);
+  const bought = await page.evaluate(() => window.__GAME__?.debugSnapshot?.());
+  check('the PRIME button buys something',
+    bought && bought.owned.some((n, i) => n > (grown?.owned?.[i] ?? 0)),
+    `owned ${JSON.stringify(grown?.owned)} -> ${JSON.stringify(bought?.owned)}`);
 
-  // -------------------------------------------------------- play a while
-  // Drive it like a real thumb: alternating holds and taps across the screen.
-  for (let i = 0; i < 14; i++) {
-    const x = 90 + (i % 5) * 55;
-    await press(page, x, 700, 90 + (i % 3) * 70);
-    await page.waitForTimeout(120);
-  }
-  if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '02-play.png') });
+  if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '02-bore.png') });
 
-  const mid = await page.evaluate(() => window.__GAME__?.debugSnapshot?.());
-  check('run advances (distance and speed move)', !!mid && mid.dist > 200, JSON.stringify(mid || {}).slice(0, 160));
+  // A long simulated absence must move the economy a long way, and the same
+  // closed form must survive being asked for thirty-six hours at once.
+  const away = await page.evaluate(() => {
+    const before = window.__GAME__.game.snapshot().logDepth;
+    window.__GAME__.debugAdvance(36 * 3600);
+    return { before, after: window.__GAME__.game.snapshot().logDepth };
+  });
+  check('a day and a half of away time moves the economy',
+    away.after > away.before + 3, `1e${away.before.toFixed(1)} -> 1e${away.after.toFixed(1)}`);
 
   // ------------------------------------------------------- frame budget
   const perf = await page.evaluate(
@@ -213,20 +226,33 @@ async function main() {
   // Headless Chromium is not a phone, but a blown budget here is a red flag.
   check('frame times are healthy', perf.p95 < 24, `median ${perf.median.toFixed(1)}ms  p95 ${perf.p95.toFixed(1)}ms`);
 
-  // ------------------------------------------------------- forced game over
-  const ended = await page.evaluate(async () => {
-    window.__GAME__?.debugKill?.();
-    await new Promise((r) => setTimeout(r, 2200));
-    return window.__GAME__?.state;
+  // ---------------------------------------------------------- prestige
+  const pres = await page.evaluate(async () => {
+    const g = window.__GAME__.game;
+    g.debugGrant(40); // 1e40 depth — comfortably past the collapse gate
+    const before = g.snapshot();
+    g.doCollapse();
+    await new Promise((r) => setTimeout(r, 250));
+    return { before, after: g.snapshot() };
   });
-  check('run can end and reach a result screen', ended === 'over' || ended === 'summary', `state=${ended}`);
-  if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '03-gameover.png') });
+  check('collapse resets the ladder and pays photons',
+    pres.after.collapses > pres.before.collapses && pres.after.logDepth < pres.before.logDepth,
+    `photons ${pres.before.photons} -> ${pres.after.photons}`);
+  if (SHOTS) await page.screenshot({ path: join(SHOT_DIR, '03-collapsed.png') });
 
   const persisted = await page.evaluate(() => {
     const raw = localStorage.getItem('redshift.v1');
     return raw ? JSON.parse(raw) : null;
   });
-  check('progress persists to localStorage', !!persisted && persisted.runs >= 1, `runs=${persisted?.runs}`);
+  check('progress persists to localStorage',
+    !!persisted?.economy && Number(persisted.economy.collapses) >= 1,
+    `collapses=${persisted?.economy?.collapses}`);
+  // The single highest-severity serialisation bug: one Infinity becomes null
+  // on the way out and poisons every comparison downstream forever.
+  const rawJson = await page.evaluate(() => localStorage.getItem('redshift.v1') ?? '');
+  check('no NaN, Infinity or null numbers reached the save file',
+    !/NaN|Infinity/.test(rawJson) && !/"depth":null/.test(rawJson),
+    `${rawJson.length} bytes`);
 
   // ------------------------------------------- one tap, one setting changed
   // Adjacent settings rows used to have overlapping touch areas, so a tap in

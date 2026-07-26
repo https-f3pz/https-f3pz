@@ -132,52 +132,58 @@ await ctx.addInitScript(() => {
 });
 
 await page.goto(base, { waitUntil: 'networkidle' });
-await page.waitForTimeout(1000);
-await page.screenshot({ path: join(OUT, '01-title.png') });
+await page.waitForTimeout(900);
 
-await page.evaluate(() => { window.__GAME__.game.screen = 'ship'; });
-await page.waitForTimeout(400);
-await page.screenshot({ path: join(OUT, '02-ship.png') });
+// A fresh save: the bore is already falling, one INTAKE owned.
+await page.screenshot({ path: join(OUT, '01-fresh.png') });
 
-// The whole pitch of the game: ONE piece of tube, at four speeds. The run is
-// flown to depth once and then frozen, so between these four frames nothing
-// changes except velocity — every difference you can see is the distortion.
-await page.evaluate(
-  ({ src, dist }) => {
-    const g = window.__GAME__.game;
-    g.screen = 'title';
-    g.beginRun({ daily: false });
-    new Function('targetDist', `return (${src})(targetDist)`)(dist);
-  },
-  { src: FLY_TO.toString(), dist: 30000 }
-);
-
-const POSES = [
-  ['03-warp-000.png', 900, 0],
-  ['04-warp-040.png', 2620, 8],
-  ['05-warp-075.png', 4125, 16],
-  ['06-warp-100.png', 5200, 24],
-];
-for (const [name, speed, combo] of POSES) {
-  await page.evaluate(
-    ({ src, sp, cb }) => new Function('speed', 'combo', `return (${src})(speed, combo)`)(sp, cb),
-    { src: POSE.toString(), sp: speed, cb: combo }
-  );
-  await page.waitForTimeout(260);
-  await page.screenshot({ path: join(OUT, name) });
-}
-
+// A few hours in: several tiers, milestones landing, the first collapse close.
 await page.evaluate(() => {
   const g = window.__GAME__.game;
-  // Release the pose freeze first — with the simulation still held, the death
-  // sequence never advances and this shot is just a copy of the last one.
-  g.loop.hitstop = 0;
-  g.screen = 'play';
-  g.run.god = false;
-  g.run.killNow();
+  g.debugGrant(14);
+  for (let i = 0; i < 60; i++) { g.buyMaxAll(); g.debugAdvance(120); }
 });
-await page.waitForTimeout(3400); // let the count-up finish before the shutter
-await page.screenshot({ path: join(OUT, '07-results.png') });
+await page.waitForTimeout(500);
+await page.screenshot({ path: join(OUT, '02-bore.png') });
+
+// Deep: many collapses and dilates, so the permanent visual layers are on.
+await page.evaluate(() => {
+  const g = window.__GAME__.game;
+  for (let c = 0; c < 40; c++) {
+    g.debugGrant(30);
+    g.buyMaxAll();
+    g.debugAdvance(600);
+    if (g.st.depth.e > 12) g.doCollapse();
+  }
+  for (let d = 0; d < 14; d++) { if (window.__GAME__.game.st.photons.life.e > 6) g.doDilate(); g.debugAdvance(1800); }
+  g.debugAdvance(7200);
+  g.buyMaxAll();
+});
+await page.waitForTimeout(700);
+await page.screenshot({ path: join(OUT, '03-deep.png') });
+
+// The boards — where the only decisions the game never makes for you live.
+await page.evaluate(() => { window.__GAME__.game.screen = 'boards'; window.__GAME__.game.board = 0; });
+await page.waitForTimeout(400);
+await page.screenshot({ path: join(OUT, '04-photon-board.png') });
+
+await page.evaluate(() => { window.__GAME__.game.board = 2; });
+await page.waitForTimeout(400);
+await page.screenshot({ path: join(OUT, '05-horizon-board.png') });
+
+// The away panel: the return-to-app moment.
+await page.evaluate(() => {
+  const g = window.__GAME__.game;
+  g.screen = 'bore';
+  const led = window.__GAME__.game.constructor;
+  g.ledger = null;
+  // Rewind the stored clock so the resolve credits a real absence.
+  const day = 26 * 3600 * 1000;
+  g.save.clock = { wall: Date.now() - day, high: Date.now() - day, budget: 36 * 3600 };
+  g.resolveAway();
+});
+await page.waitForTimeout(600);
+await page.screenshot({ path: join(OUT, '06-away.png') });
 
 console.log(`wrote screenshots to ${OUT}`);
 await browser.close();

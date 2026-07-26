@@ -1,12 +1,35 @@
-// REDSHIFT — every tunable number.
+// REDSHIFT: DEEP FIELD — every tunable number.
 //
-// The whole game is one idea: you fly down a tube in real perspective, and
-// your velocity distorts the projection. Faster means a wider field of view,
-// walls that bow outward, geometry that smears along its own motion, and
-// colour that Doppler-shifts blue ahead / red behind.
+// You are falling down a bore that has no bottom. Every machine you build makes
+// the fall faster, until the picture itself can no longer keep up — and then you
+// collapse the whole apparatus into light and fall again from deeper.
 //
-// Because speed is also the score, the distortion IS the readout — and the
-// better you play, the harder the world becomes to read.
+// ---------------------------------------------------------------------------
+// THE INVARIANT. READ THIS BEFORE CHANGING ANY NUMBER IN THIS FILE.
+// ---------------------------------------------------------------------------
+// A ladder in which tier k produces tier k-1, and in which every MILE_EVERY
+// purchases multiply a tier's output by MILE_MULT, feeds back into itself. The
+// gain of that loop is
+//
+//     g(S) = (log10(MILE_MULT) / MILE_EVERY) * sum_{k=1..S} 1 / log10(r_k)
+//
+// and depth then grows as t^P where P = S / (1 - g). If g ever reaches 1 the
+// economy diverges in finite time and the game is over in an afternoon.
+//
+// With the values below: g(8) = 0.359, g(16) = 0.558, P(8) = 12.5, P(16) = 36.2,
+// and the prestige feedback exponent is 0.835 against a ceiling of 1.
+//
+// THREE RULES, FROZEN:
+//   1. Nothing may ever change MILE_MULT, MILE_EVERY or any ratio(k). There is
+//      deliberately NO cost-reduction upgrade in this game, because lowering a
+//      ratio RAISES g — a 2% cut across the board tips it over 1.
+//   2. Any multiplier bought with a prestige currency at geometric cost for
+//      geometric benefit adds log(benefit)/log(cost) to the feedback exponent
+//      and MUST be hard-capped. That is why OVERDRIVE stops at 12 levels.
+//   3. No unbounded Big lifetime sum may drive anything visual or structural.
+//      See rule 3 in economy.js for why, and tools/coretest.mjs for the proof.
+//
+// tools/balance.mjs asserts all three on every run.
 
 export const VW = 720; // virtual width; game.js scales it to the device
 export const VH_MIN = 1120;
@@ -22,175 +45,125 @@ export const TUBE = {
   ringGap: 340, // spacing of the structural rings
 };
 
-// ------------------------------------------------------------------ physics
-
-export const SPEED = {
-  start: 900,
-  min: 620,
-  max: 5200,
-
-  // The bore pulls harder the deeper you are: a speed FLOOR that rises with
-  // distance. Without it the economy self-stabilises — a gate bonus paid per
-  // plane crossed is worth more per second the faster you go, so gains and
-  // decay balance at `decay x spacing / gateGain` and the view stops distorting
-  // at whatever that happens to be. The floor is what makes the distortion
-  // escalate across a run, which is the whole premise.
-  // The floor tops out below the shatter point's reach only slowly, so a
-  // perfectly clean pilot still eventually meets a speed their hull cannot
-  // take a hit at — but everything above the floor has to be earned by
-  // grazing, which is where skill and style show up.
-  pullCap: 0.90, // the floor asymptotes here, as a fraction of max
-  pullK: 65000, // e-folding distance of the ramp
-  pullBack: 0.25, // per second: how hard you are dragged back up to the floor
-
-  decay: 190, // units/sec² bled from anything above the floor
-  grazeGain: 240, // per near miss — the only real surplus
-  gateGain: 45, // per gate: not quite enough to hold station on its own
-  hitLoss: 0.72, // multiplier applied on a clip — the real cost is the crack
-
-  // Failure. Clipping a wall is survivable while you are slow and the picture
-  // is honest; at speed, with a view you can no longer trust, it is not.
-  shatter: 0.86, // warp at which a clip becomes fatal
-  crack: 0.03, // every clip lowers that threshold hard
-  // ...and the hull tires on its own, with TIME. Without this, refusing to go
-  // fast is simply the best strategy — a slow pilot survives longer and
-  // travels further for it, and the whole distortion becomes optional.
-  fatigue: 0.0062, // per second
-  // A near miss is the ONLY thing that works the fatigue back out. That single
-  // rule closes the loop: flying close to the wall is what makes you fast and
-  // what keeps you alive, and playing safe is a slow bleed to a hull that can
-  // no longer take the speed the bore is pulling you to.
-  anneal: 0.016, // per graze
-};
-
-/**
- * The speed the bore is pulling you to at this distance. A pure function of
- * distance so the track generator can use it too, and stay deterministic.
- */
-export function speedFloor(dist) {
-  const top = SPEED.max * SPEED.pullCap;
-  return SPEED.start + (top - SPEED.start) * (1 - Math.exp(-dist / SPEED.pullK));
-}
-
-export const SHIP = {
-  // Angular position around the bore, in radians. One thumb, one axis.
-  turnRate: 5.6, // rad/sec at full deflection
-  dragGain: 0.0135, // radians per pixel of thumb travel
-  maxStep: 0.42, // rad per substep — stops a flick teleporting you
-  radius: 0.16, // angular half-width for collision
-  z: 0, // the player plane is always z = 0
-};
-
-// How hard the projection lies, as a function of speed (0..1).
+// How hard the projection lies, as a function of the cycle (0..1).
 export const WARP = {
   fovMin: 620, // focal length at rest — a calm, narrow view
-  fovMax: 1180, // and at full speed: much wider, everything rushes past
-  barrel: 0.42, // radial bow of the walls at full speed
+  fovMax: 1180, // and at full warp: much wider, everything rushes past
+  barrel: 0.42, // radial bow of the walls
   smear: 0.55, // how far geometry streaks along its own motion
   doppler: 0.95, // strength of the blue-ahead / red-behind shift
   roll: 0.10, // camera roll induced by turning
-  shakeAt: 0.72, // speed fraction where the frame starts to buzz
+  shakeAt: 0.72, // warp at which the frame starts to buzz
 };
 
-export const GRAZE = {
-  window: 2.4, // seconds before a chain lapses
-  maxCombo: 24,
-  multPer: 0.14,
-  // Radians of clearance, measured from the hull's edge, that counts as a near
-  // miss. A single open sector is 0.79 rad wide and the hull eats 0.32 of
-  // that, so this is roughly the outer half of the tightest gap in the game.
-  angle: 0.12,
+// Speed is derived from warp and exists only to drive the renderer. The bounds
+// are what keep render.js's vignette radius positive and its ring spacing on
+// the power-of-two ladder.
+export const SPEED = { min: 620, span: 4300 };
+
+// ------------------------------------------------------------ the economy
+
+export const LADDER = [
+  'INTAKE', 'IMPELLER', 'COMPRESSOR', 'LATTICE', 'RESONATOR', 'COLLIMATOR',
+  'SINGULARITY', 'PRIME MOVER', 'AXIS', 'VOID DRAW', 'CATENARY', 'NULL FORGE',
+  'RECURSION', 'WORLDLINE', 'ASYMPTOTE', 'LIMIT',
+];
+
+export const TIERS = { base: 8, max: 16 };
+
+export const MILE_MULT = 1.20; // FROZEN — see the invariant above
+export const MILE_EVERY = 20; // FROZEN — see the invariant above
+
+export const PEXP = 0.32; // prestige gain exponent (collapse and dilate alike)
+export const TEXP = 0.32;
+export const DRIFT_MULT = 3; // per omega allocated to DRIFT
+
+export const OVERDRIVE = { levels: 12, mult: 2.2, base: 25, ratio: 5 };
+
+// Prestige gates, written as literal Bigs so config imports nothing. Every Big
+// operation returns a fresh pair and never mutates its arguments, so sharing
+// these constants is safe.
+export const GATE = {
+  collapse: { m: 1, e: 7 }, // depth 1e7
+  dilate: { m: 1, e: 6 }, // lifetime photons 1e6
+  horizonDecade: 5, // one omega per decade of tau past this
 };
 
-// ------------------------------------------------------------------- zones
-// Each zone is a palette plus a rule change. Crossing one is a full-screen
-// event, and "I have never seen the last one" is the retention hook.
+export const AUTO = {
+  driveBase: 3, // AUTO-DRIVE k costs 3^(k-1) photons
+  bulk: 50,
+  governor: 500,
+  collapse: 5000,
+  dilate: 100, // tau, not photons
+  horizonDefault: 300, // PRIME's planning horizon before any absence is known
+  horizonMin: 120,
+  horizonMax: 12 * 3600,
+};
 
-export const ZONES = [
-  { at: 0, name: 'CALIBRATION', wall: '#1b3a6b', edge: '#57e0ff', hazard: '#ff3b6b', fog: '#050912' },
-  { at: 25000, name: 'DRIFT', wall: '#123a44', edge: '#5affd0', hazard: '#ff8a3b', fog: '#04100f' },
-  { at: 70000, name: 'CASCADE', wall: '#3a1550', edge: '#c07aff', hazard: '#ffd23b', fog: '#0a0518' },
-  { at: 140000, name: 'REDSHIFT', wall: '#5a1330', edge: '#ff7ae0', hazard: '#ff2020', fog: '#12030a' },
-  { at: 230000, name: 'EVENT HORIZON', wall: '#101018', edge: '#ffffff', hazard: '#ff2020', fog: '#000000' },
+/** GOVERNOR reserve fractions: depth held back from the cheap tiers. */
+export const GOV_STEPS = [0, 0.25, 0.5, 0.75];
+
+/** Auto-prestige thresholds: fire when the pending award is this many times the bank. */
+export const PRESTIGE_STEPS = [2, 5, 10, 50];
+
+export const AWAY = {
+  baseCap: 36 * 3600,
+  perStasis: 24 * 3600,
+  stasisMax: 7, // -> 204 hours
+  chunk: 60, // seconds per offline chunk; below this the curve is flat
+  refill: 1.25, // budget bucket refill rate per real second
+};
+
+export const CHALLENGES = [
+  { id: 'coldbore', name: 'COLD BORE', handicap: 'TIERS 5+ LOCKED', reward: '+4 FREE IN TIERS 1-4' },
+  { id: 'deadreck', name: 'DEAD RECKONING', handicap: 'NO AUTOBUYERS', reward: 'PHOTON GAIN x1.5' },
+  { id: 'flattime', name: 'FLAT TIME', handicap: 'CLOCK FORCED TO x1', reward: 'CLOCK COEFFICIENT +0.05' },
+  { id: 'nomiles', name: 'NO MILESTONES', handicap: 'ALL MILESTONES OFF', reward: '+1 FREE MILESTONE EVERYWHERE' },
+  { id: 'singlefile', name: 'SINGLE FILE', handicap: 'GOVERNOR FORCED TO 75%', reward: '+2 FREE IN EVERY TIER' },
 ];
 
-const BLEND = 6000; // units of crossfade before a zone boundary
+// --------------------------------------------------------------- palettes
+//
+// The old game had five fixed zones on a distance axis that froze forever once
+// you passed the last one. An idle game runs for months, so the palette cycles
+// instead: eight of them, and the whole set rotates 47 degrees of hue each
+// complete cycle. gcd(47, 360) = 1, so it takes 360 cycles to repeat exactly.
 
-export function zoneAt(dist) {
-  let z = ZONES[0];
-  for (const x of ZONES) if (dist >= x.at) z = x;
-  return z;
+export const PALETTES = [
+  { name: 'CALIBRATION', wall: '#1b3a6b', edge: '#57e0ff', hazard: '#ff3b6b', fog: '#050912' },
+  { name: 'DRIFT', wall: '#123a44', edge: '#5affd0', hazard: '#ff8a3b', fog: '#04100f' },
+  { name: 'CASCADE', wall: '#3a1550', edge: '#c07aff', hazard: '#ffd23b', fog: '#0a0518' },
+  { name: 'DEEP FIELD', wall: '#5a1330', edge: '#ff7ae0', hazard: '#ff2020', fog: '#12030a' },
+  { name: 'HALIDE', wall: '#123c2a', edge: '#8dff6a', hazard: '#ffe14f', fog: '#040f08' },
+  { name: 'COBALT', wall: '#101c56', edge: '#6a8dff', hazard: '#ff6ad5', fog: '#03060f' },
+  { name: 'EMBER', wall: '#5a2a10', edge: '#ffb14f', hazard: '#ff4020', fog: '#100603' },
+  { name: 'EVENT HORIZON', wall: '#101018', edge: '#ffffff', hazard: '#ff2020', fog: '#000000' },
+];
+
+/** Bands are 4000 units of the synthetic palette coordinate wide. */
+export const BAND_SPAN = 4000;
+const CROSSFADE = 0.18; // fraction of a band spent blending into the next
+
+export function paletteIndex(dist) {
+  return Math.floor(dist / BAND_SPAN);
 }
 
-export function zoneBlend(dist) {
-  for (let i = ZONES.length - 1; i >= 0; i--) {
-    const z = ZONES[i];
-    if (dist >= z.at) {
-      const next = ZONES[i + 1];
-      if (!next) return { from: z, to: z, k: 0 };
-      return { from: z, to: next, k: Math.min(1, Math.max(0, (dist - (next.at - BLEND)) / BLEND)) };
-    }
-  }
-  return { from: ZONES[0], to: ZONES[0], k: 0 };
-}
-
-// --------------------------------------------------------------- obstacles
-
-export const OBS = { WALLS: 0, SPINNER: 1, IRIS: 2, COMB: 3 };
-
-// World units of track generated at a time. Each chunk is one pattern, so this
-// also sets how long you spend in a single idea — around six seconds early on,
-// dropping to under two once the bore is really moving.
-export const CHUNK = 6000;
-
-export const UPGRADES = [
-  {
-    id: 'grip', name: 'GRIP', blurb: 'TURN RATE',
-    costs: [120, 320, 700, 1400, 2600],
-    value: (t) => 5.6 + t * 0.55, unit: (t) => `${(5.6 + t * 0.55).toFixed(1)} rad/s`,
-  },
-  {
-    id: 'lens', name: 'LENS', blurb: 'WARP ONSET',
-    costs: [120, 320, 700, 1400, 2600],
-    // Higher tiers delay the distortion, trading spectacle for readability.
-    value: (t) => 1 - t * 0.09, unit: (t) => `${100 - t * 9}% DISTORTION`,
-  },
-  {
-    id: 'intake', name: 'INTAKE', blurb: 'GRAZE VALUE',
-    costs: [120, 320, 700, 1400, 2600],
-    value: (t) => 240 + t * 44, unit: (t) => `+${240 + t * 44} SPEED`,
-  },
-  {
-    id: 'hull', name: 'HULL', blurb: 'SHATTER POINT',
-    costs: [120, 320, 700, 1400, 2600],
-    // How much warp the hull can take a hit at. This is the run-length dial:
-    // everything else being equal, you die at the first clip past this number.
-    value: (t) => SPEED.shatter + t * 0.028,
-    unit: (t) => `SHATTER AT ${Math.round((SPEED.shatter + t * 0.028) * 100)}%`,
-  },
-];
-
-export const MISSION_POOL = [
-  { id: 'dist100k', text: 'TRAVEL 100,000 UNITS', goal: 100000 },
-  { id: 'chain20', text: 'HOLD A 20 CHAIN', goal: 20 },
-  { id: 'top4k', text: 'REACH 4,000 SPEED', goal: 4000 },
-  { id: 'clean40', text: 'CLEAR 40 GATES WITHOUT A CLIP', goal: 40 },
-  { id: 'zone3', text: 'REACH REDSHIFT (140,000)', goal: 140000 },
-  { id: 'graze60', text: 'GRAZE 60 TIMES IN ONE RUN', goal: 60 },
-];
-
-export const RANKS = [
-  { name: 'IDLE', at: 0 }, { name: 'COASTING', at: 40000 }, { name: 'PLANING', at: 90000 },
-  { name: 'SUPERSONIC', at: 160000 }, { name: 'BLUESHIFT', at: 260000 }, { name: 'LIGHTLIKE', at: 400000 },
-];
-
-export function rankFor(d) {
-  let r = RANKS[0];
-  for (const x of RANKS) if (d >= x.at) r = x;
-  return r;
-}
-
-export function upgradeValue(save, id) {
-  const u = UPGRADES.find((x) => x.id === id);
-  return u.value(save?.upgrades?.[id] ?? 0);
+/**
+ * Palette at a synthetic coordinate, with a crossfade into the next and a hue
+ * rotation that advances once per complete cycle of eight.
+ */
+export function paletteBlend(dist) {
+  const i = Math.floor(dist / BAND_SPAN);
+  const f = dist / BAND_SPAN - i;
+  const n = PALETTES.length;
+  const from = PALETTES[((i % n) + n) % n];
+  const to = PALETTES[(((i + 1) % n) + n) % n];
+  const k = f > 1 - CROSSFADE ? (f - (1 - CROSSFADE)) / CROSSFADE : 0;
+  return {
+    from,
+    to,
+    k,
+    hue: Math.floor(i / n) * 47,
+    name: k > 0.5 ? to.name : from.name,
+  };
 }

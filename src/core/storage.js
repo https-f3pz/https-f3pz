@@ -21,21 +21,18 @@ const backend = (() => {
   }
 })();
 
+export const SAVE_VERSION = 2;
+
 export function defaults() {
   return {
-    v: 1,
-    best: 0,           // furthest distance — the headline record
-    bestScore: 0,
-    bestCombo: 0,
-    bestSpeed: 0,
-    runs: 0,
-    totalDist: 0,
-    shards: 0,
-    upgrades: { grip: 0, lens: 0, intake: 0, hull: 0 },
-    dists20: [],
-    missions: null,
-    missionSets: 0,
-    daily: { date: null, dist: 0, score: 0, streak: 0, locked: false, history: [] },
+    v: SAVE_VERSION,
+    // The whole economy, serialised by game/economy.js. Every unbounded number
+    // in here is a STRING, never a JSON number: JSON.stringify(Infinity) is
+    // `null`, and one null merged over a default silently poisons every
+    // comparison downstream for the life of the save.
+    economy: null,
+    // Wall clock, monotonic sample, high-water mark and away budget.
+    clock: null,
     settings: {
       sound: true,
       music: true,
@@ -43,8 +40,25 @@ export function defaults() {
       reduceShake: 1,
       reduceGlow: false,
     },
-    seenTips: {},
   };
+}
+
+/**
+ * Bring an older save forward. Runs BEFORE the merge onto defaults — merging
+ * first would let v1's numeric fields sit underneath v2's string-Big fields
+ * and produce a save that is neither.
+ *
+ * v1 was a different game entirely (a reflex arcade run). Nothing in its
+ * progress maps onto an idle economy, so only the settings survive — but they
+ * DO survive, which is why the storage key is not bumped. Changing the key
+ * orphans the blob and silently discards the player's sound, music, haptics
+ * and accessibility choices along with it.
+ */
+function migrate(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const v = Number(parsed.v) || 1;
+  if (v >= SAVE_VERSION) return parsed;
+  return { v: SAVE_VERSION, settings: parsed.settings ?? {} };
 }
 
 function isPlain(v) {
@@ -84,7 +98,8 @@ export function load() {
   }
   // Merge onto defaults so a save written by an older build gains new fields
   // instead of leaving `undefined` holes all over the game.
-  cache = parsed && typeof parsed === 'object' ? deepMerge(defaults(), parsed) : defaults();
+  const migrated = migrate(parsed);
+  cache = migrated ? deepMerge(defaults(), migrated) : defaults();
   return cache;
 }
 
