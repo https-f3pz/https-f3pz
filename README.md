@@ -1,1 +1,1 @@
-claude vibe coding
+claude code max plan
